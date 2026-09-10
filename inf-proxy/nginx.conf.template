@@ -1,0 +1,40 @@
+# Rendered by entrypoint.sh via envsubst (only ${MODEL_UPSTREAM} is substituted).
+#
+# Chat/inference goes to the FastAPI proxy; everything else
+# (/v1/models, model metadata, etc.) is proxied straight to the model.
+
+server {
+    listen 8000;
+    server_name _;
+
+    # SSE-friendly defaults for the proxy routes.
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Connection "";
+
+    location = /v1/chat/completions {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location = /v1/completions {
+        proxy_pass http://127.0.0.1:9000;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:9000;
+    }
+
+    # Model metadata and everything else -> straight to the model.
+    location / {
+        proxy_pass ${MODEL_UPSTREAM};
+        proxy_read_timeout 300s;
+    }
+}

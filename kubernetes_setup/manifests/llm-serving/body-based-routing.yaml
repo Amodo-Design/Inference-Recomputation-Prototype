@@ -1,0 +1,211 @@
+# Body-based routing (BBR): a single OpenAI endpoint for ALL models.
+#
+#   client ─▶ llm-gateway ─▶ BBR ext-proc (reads "model" from the JSON body,
+#             sets X-Gateway-Model-Name) ─▶ header-matched HTTPRoute ─▶ the
+#             model's InferencePool ─▶ EPP-picked pod (verify-tap ─▶ vLLM)
+#
+# POST http://<gateway>/v1/chat/completions with {"model": "<served name>"}
+# now works without per-model path prefixes. The per-model paths
+# (/infver/<name>/v1/...) keep working alongside.
+#
+# Caveat: GET /v1/models has no body, so it cannot be body-routed — the
+# llm-openai-v1 route sends it to a default backend (the 7B instance), which
+# lists only its own model. Open WebUI therefore keeps its per-model
+# connections (discovery works per connection); the single endpoint is for
+# programmatic OpenAI clients. When adding a model: add a header-matched
+# rule to the llm-openai-v1 HTTPRoute below.
+# BBR's controller-runtime manager watches ConfigMaps (config hot-reload)
+# with an unrestricted (cluster-scope) informer — v1.4.0 has no flag to
+# scope it to a namespace, so it needs a ClusterRole, not a Role. With only
+# namespaced RBAC the informer LIST is forbidden at cluster scope, the cache
+# never syncs, and after controller-runtime's 2-minute cache-sync timeout
+# the process exits ("failed to wait for configmap caches to sync") in a
+# crash loop.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bbr
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  # Cluster-scoped resource: prefixed to stay unique across apps.
+  name: infver-bbr
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: infver-bbr
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: infver-bbr
+subjects:
+  - kind: ServiceAccount
+    name: bbr
+    namespace: infver
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bbr
+  labels:
+    app: bbr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bbr
+  template:
+    metadata:
+      labels:
+        app: bbr
+    spec:
+      serviceAccountName: bbr
+      containers:
+        - name: bbr
+          # Same GIE release as the gie-crds app
+          image: registry.k8s.io/gateway-api-inference-extension/bbr:v1.4.0
+          args:
+            - --grpc-port=9002
+            - --grpc-health-port=9003
+            # Plaintext gRPC: keeps the EnvoyFilter below simple (no
+            # DestinationRule/TLS dance like the EPPs need).
+            - --secure-serving=false
+          ports:
+            - containerPort: 9002
+            - containerPort: 9003
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bbr
+spec:
+  selector:
+    app: bbr
+  ports:
+    - name: grpc-ext-proc
+      port: 9002
+      targetPort: 9002
+---
+# Wires BBR into the llm-gateway Envoy as the FIRST HTTP filter, so the
+# X-Gateway-Model-Name header exists before route matching runs.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: llm-gateway-bbr
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: llm-gateway
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.ext_proc
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+            # If BBR is down, let traffic through un-annotated (per-model
+            # paths keep working; /v1 falls to the default rule) rather
+            # than 500ing everything.
+            failure_mode_allow: true
+            processing_mode:
+              request_header_mode: SEND
+              request_body_mode: BUFFERED
+              response_header_mode: SKIP
+              response_body_mode: NONE
+            grpc_service:
+              envoy_grpc:
+                cluster_name: outbound|9002||bbr.infver.svc.cluster.local
+---
+# Single-endpoint OpenAI routes: header-matched per model (header set by
+# BBR), with /v1/models and unmatched /v1 traffic defaulting to the 7B
+# workload service.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm-openai-v1
+spec:
+  parentRefs:
+    - name: llm-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: Qwen/Qwen2.5-7B-Instruct
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: Qwen/Qwen2.5-7B-Instruct
+      backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: qwen2-5-7b-instruct-inference-pool
+          port: 8000
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: Qwen/Qwen2.5-1.5B-Instruct
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: Qwen/Qwen2.5-1.5B-Instruct
+      backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: qwen2-5-1-5b-instruct-inference-pool
+          port: 8000
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/chat/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: openai/gpt-oss-20b
+        - path:
+            type: PathPrefix
+            value: /v1/completions
+          headers:
+            - name: X-Gateway-Model-Name
+              value: openai/gpt-oss-20b
+      backendRefs:
+        - group: inference.networking.k8s.io
+          kind: InferencePool
+          name: gpt-oss-20b-inference-pool
+          port: 8000
+    # No/unknown model header (incl. GET /v1/models): default to the 7B
+    # instance's workload service directly.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      backendRefs:
+        - name: qwen2-5-7b-instruct-kserve-workload-svc
+          port: 8000

@@ -1,0 +1,39 @@
+# Permanent 200ms companion to the fleet ServiceMonitor, keep-ruled to ONLY
+# the profiling fields the ledger's GPU-enrichment poller integrates
+# (sub-second inference/verify events need several samples per window; the
+# fleet monitor's 1s cadence gives 0-1). honorLabels: true keeps the DCGM
+# exporter's own pod/namespace/container labels intact (instead of
+# prometheus-operator renaming them to exported_pod/exported_namespace/
+# exported_container), which is what lets the ledger poller's
+# {pod="<pod_name>"} selector match; combined with the metricRelabelings
+# keep-list below, that gives this monitor's series a distinct, non-duplicate
+# labelset from the fleet monitor's. Requires the ClusterPolicy's
+# DCGM_EXPORTER_INTERVAL=200 (see README "GPU monitoring (DCGM)").
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nvidia-dcgm-exporter-fast
+  namespace: gpu-operator
+  labels:
+    app: nvidia-dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+  namespaceSelector:
+    matchNames:
+      - gpu-operator
+  endpoints:
+    - port: gpu-metrics
+      path: /metrics
+      interval: 200ms
+      scrapeTimeout: 200ms
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: DCGM_FI_PROF_PIPE_TENSOR_ACTIVE|DCGM_FI_PROF_SM_OCCUPANCY|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_PIPE_FP64_ACTIVE|DCGM_FI_PROF_PIPE_FP32_ACTIVE|DCGM_FI_PROF_PIPE_FP16_ACTIVE|DCGM_FI_PROF_PIPE_TENSOR_HMMA_ACTIVE|DCGM_FI_PROF_PIPE_TENSOR_IMMA_ACTIVE
+          action: keep

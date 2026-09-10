@@ -1,0 +1,14 @@
+# Verifier model cache (see manifests/local-storage/persistent-volumes.yaml).
+# RWO is sufficient: seed Jobs and verifier vLLMs are all pinned to
+# gpu-node-1 (the PV's node), and same-node pods share an RWO local PV.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hf-model-cache
+spec:
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 300Gi

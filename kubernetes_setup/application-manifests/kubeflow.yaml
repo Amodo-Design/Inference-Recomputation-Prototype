@@ -1,0 +1,41 @@
+# Deploys a slim Kubeflow (KServe 0.18.0 incl. LLMInferenceService, Kubeflow
+# Trainer, and their infra: cert-manager/Istio/Knative) via the cherry-picked
+# kustomization in manifests/kubeflow-slim — see the DROPPED list there.
+# ServerSideApply is required (large CRDs) and the retry policy handles
+# ordering: CRDs and webhooks come up over a few sync retries.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kubeflow
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<org>/<repo>.git
+    targetRevision: main
+    path: manifests/kubeflow-slim
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false # safety: never auto-prune platform components
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    # Webhook CA bundles are injected at runtime by cert-manager
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      jqPathExpressions:
+        - '.webhooks[].clientConfig.caBundle'
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jqPathExpressions:
+        - '.webhooks[].clientConfig.caBundle'

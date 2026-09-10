@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - dcgm-exporter-servicemonitor.yaml
+  - dcgm-exporter-servicemonitor-fast.yaml
+  - dcgm-metrics-configmap.yaml
+configMapGenerator:
+  # Custom GPU fleet dashboard, picked up by the Grafana dashboard sidecar
+  # (label grafana_dashboard=1, folder from the grafana_folder annotation).
+  # Lives in the monitoring namespace — that's where the sidecar watches.
+  - name: grafana-dashboard-dcgm-gpu-fleet
+    namespace: monitoring
+    files:
+      - dashboards/dcgm-gpu-fleet.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: GPU

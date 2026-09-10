@@ -1,0 +1,27 @@
+.env
+.env.*
+!.env.example
+
+# Persistent runtime data and model cache.
+data/
+
+# Local logs and scratch files.
+logs/
+*.log
+tmp/
+
+# OS/editor metadata.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python env
+*/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+uv.lock
+ai-context/
+*.egg-info/

@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: infver-postgres
+spec:
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: infver-db
+  labels:
+    app: infver-db
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO local PV cannot be shared during a rolling update
+  selector:
+    matchLabels:
+      app: infver-db
+  template:
+    metadata:
+      labels:
+        app: infver-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: infver-secrets
+          env:
+            # Keep postgres data in a subdirectory of the volume so the
+            # image's emptiness check isn't confused by the mount point.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            # Schema DDL, applied automatically on first init of an empty
+            # data directory only (postgres image behaviour).
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "ledger", "-d", "ledger"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "ledger", "-d", "ledger"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: infver-postgres
+        - name: init-sql
+          configMap:
+            name: ledger-init-sql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: infver-db
+spec:
+  selector:
+    app: infver-db
+  ports:
+    - port: 5432
+      targetPort: 5432

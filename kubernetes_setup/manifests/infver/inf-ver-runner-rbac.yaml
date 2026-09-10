@@ -1,0 +1,28 @@
+# ServiceAccount for orchestrator-templated runner Jobs: the runner resolves
+# its verifier's backend pod via EndpointSlices (targetRef.name + nodeName —
+# no pods access needed) for per-pod GPU attribution.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inf-ver-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inf-ver-runner
+rules:
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inf-ver-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: inf-ver-runner
+subjects:
+  - kind: ServiceAccount
+    name: inf-ver-runner

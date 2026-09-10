@@ -1,0 +1,21 @@
+# Send only the files needed to build the UI.
+**
+!package.json
+!package-lock.json
+!tsconfig.json
+!next.config.js
+!app/
+!app/**
+
+# Keep local credentials and runtime artifacts out of the source tree copy.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*api_key*.txt
+**/node_modules/
+**/.next/
+**/logs/
+**/*.log
+**/data/
+**/tmp/

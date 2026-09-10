@@ -1,0 +1,93 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 87.16.1
+    helm:
+      releaseName: kube-prometheus-stack
+      valuesObject:
+        prometheus:
+          prometheusSpec:
+            # Pick up ServiceMonitors/PodMonitors/Rules from any namespace,
+            # not just those labelled with this Helm release (needed for the
+            # DCGM exporter ServiceMonitor in the gpu-operator namespace).
+            serviceMonitorSelectorNilUsesHelmValues: false
+            podMonitorSelectorNilUsesHelmValues: false
+            ruleSelectorNilUsesHelmValues: false
+            retention: 30d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  storageClassName: local-storage
+                  accessModes:
+                    - ReadWriteOnce
+                  resources:
+                    requests:
+                      storage: 60Gi
+          ingress:
+            enabled: true
+            ingressClassName: nginx
+            hosts:
+              - prometheus.infver.local
+            paths:
+              - /
+        grafana:
+          # An RWO local PV cannot be shared by two pods during a rolling update
+          deploymentStrategy:
+            type: Recreate
+          grafana.ini:
+            dashboards:
+              # Allow 1s auto-refresh (Grafana's default floor is 5s) so the
+              # GPU fleet dashboard can track the 1s DCGM scrape.
+              min_refresh_interval: 1s
+          # Second Prometheus datasource with a 1s query floor, used ONLY by
+          # the GPU fleet dashboard. The default provisioned datasource keeps
+          # the chart's 30s timeInterval on purpose: it feeds every built-in
+          # dashboard, and a 1s floor there would shrink $__rate_interval
+          # windows below most targets' 30s scrape interval and break their
+          # rate() panels.
+          additionalDataSources:
+            - name: Prometheus-1s
+              uid: prometheus-1s
+              type: prometheus
+              access: proxy
+              url: http://kube-prometheus-stack-prometheus.monitoring:9090
+              jsonData:
+                timeInterval: 1s
+          ingress:
+            enabled: true
+            ingressClassName: nginx
+            hosts:
+              - grafana.infver.local
+          persistence:
+            enabled: true
+            type: pvc
+            storageClassName: local-storage
+            accessModes:
+              - ReadWriteOnce
+            size: 10Gi
+          sidecar:
+            dashboards:
+              # Custom dashboards ship as ConfigMaps labelled
+              # grafana_dashboard=1 (see manifests/gpu-monitoring); the
+              # grafana_folder annotation places them in a Grafana folder.
+              folderAnnotation: grafana_folder
+              provider:
+                foldersFromFilesStructure: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Prometheus Operator CRDs exceed the client-side apply annotation limit
+      - ServerSideApply=true

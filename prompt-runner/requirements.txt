@@ -1,0 +1,10 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+# PromptBench 0.0.4 pins dependencies that do not install cleanly on newer
+# Pythons — the Dockerfile uses Python 3.12 (matching the reference script's
+# guidance) and CPU-only torch so the image stays as lean as it can be.
+promptbench==0.0.4
+datasets==2.15.0
+numpy>=1.26
+pandas>=2.2
+psycopg[binary]>=3.1

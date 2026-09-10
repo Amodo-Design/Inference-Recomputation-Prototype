@@ -1,0 +1,121 @@
+# Qwen2.5-1.5B-Instruct — second model behind the same gateway, proving
+# multi-model routing over a single Open WebUI connection. Same verify-tap
+# scheme as qwen2-5-7b-instruct.yaml.
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen2-5-1-5b-instruct
+spec:
+  model:
+    uri: hf://Qwen/Qwen2.5-1.5B-Instruct
+    name: Qwen/Qwen2.5-1.5B-Instruct
+  replicas: 1
+  template:
+    containers:
+      - name: main # vLLM — internal only
+        image: vllm/vllm-openai:v0.25.1
+        # The preset pod template (kubeflow-slim/llmisvc-configs.yaml) sets
+        # runAsNonRoot, but the stock vLLM image runs as root — override at
+        # the container level or the kubelet refuses to start it.
+        securityContext:
+          runAsNonRoot: false
+        # Full command override: the preset template's bash wrapper runs
+        # `vllm serve ... --port 8000` and treats container args as extra
+        # vllm flags — that both duplicates flags and binds 8000, which the
+        # verify-tap owns. Owning the command keeps vLLM on 8001. The
+        # template's readiness probe (8000 /health) still works: it reaches
+        # vLLM through the tap.
+        command:
+          - /bin/bash
+          - -c
+          - >-
+            exec vllm serve /mnt/models
+            --served-model-name Qwen/Qwen2.5-1.5B-Instruct
+            --port 8001
+            --disable-uvicorn-access-log
+            --max-model-len 8192
+            --enable-auto-tool-choice
+            --tool-call-parser hermes
+        ports:
+          - containerPort: 8001
+        env:
+          # Model Runner V2 (vLLM default since v0.22 for dense generate
+          # models) samples with a stateless Triton kernel that difr's
+          # verifier cannot replay; the V1 runner's per-request Philox
+          # stream is the verification contract. Pin V1 explicitly.
+          - name: VLLM_USE_V2_MODEL_RUNNER
+            value: "0"
+        resources:
+          requests:
+            cpu: "2"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+          limits:
+            memory: 16Gi
+            nvidia.com/gpu: "1"
+      - name: verify-tap # sidecar — takes the pod's real serving port
+        image: harbor.infver.local/infver_images/inf-proxy:latest
+        imagePullPolicy: Always
+        ports:
+          - containerPort: 8000
+        env:
+          - name: INF_PROXY_MODEL_BASE_URL
+            value: http://localhost:8001/v1
+          - name: INF_PROXY_MODEL_HOSTNAME
+            value: kserve-qwen2-5-1-5b-instruct
+          # This sidecar shares the pod with the serving vLLM, so its own
+          # identity IS the serving pod's — recorded on every tap message
+          # for per-pod GPU attribution in the ledger.
+          - name: INF_PROXY_POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: INF_PROXY_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: INF_PROXY_MESSAGE_WRITER_URL
+            value: http://message-writer:8100
+          # Fixed sampling config pinned on every request (client values
+          # overridden): reproducible generation, recorded in the ledger.
+          # REQUIRED for verification — the verifier needs ALL four
+          # (seed/temperature/top_k/top_p) from the declared model row or
+          # events are marked unverifiable (sampling_config_missing).
+          # Values match difr's reference config (its default match-target).
+          - name: INF_PROXY_SEED
+            value: "42"
+          - name: INF_PROXY_TEMPERATURE
+            value: "1.0"
+          - name: INF_PROXY_TOP_K
+            value: "200"
+          - name: INF_PROXY_TOP_P
+            value: "0.95"
+          # Self-declare this deployment to the ledger at startup (model
+          # name discovered from vLLM's /v1/models) — replaces the manual
+          # POST /model-deployments/declare step.
+          - name: INF_PROXY_DECLARE
+            value: "true"
+          - name: INF_PROXY_LEDGER_API_URL
+            value: http://ledger-api:8000
+  router:
+    gateway:
+      refs:
+        - name: llm-gateway
+          namespace: infver
+    route: {}
+    scheduler: {}
+---
+# The endpoint picker (EPP) serves ext-proc gRPC over TLS with a self-signed
+# cert (secure-serving is its default); without this DestinationRule the
+# gateway's Envoy dials plaintext and every request 500s with
+# ext_proc_error_gRPC_error_14 (connection reset before headers).
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: qwen2-5-1-5b-instruct-epp-tls
+spec:
+  host: qwen2-5-1-5b-instruct-epp-service.infver.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

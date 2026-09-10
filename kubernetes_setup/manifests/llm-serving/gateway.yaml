@@ -1,0 +1,18 @@
+# Single entry point for all LLMInferenceServices. Each model's managed
+# HTTPRoute + endpoint picker (KServe spec.router) attaches here, so one
+# OpenAI-compatible connection serves every model — requests are routed by
+# the "model" field. Istio (installed with Kubeflow) implements the Gateway;
+# its convention creates Service "llm-gateway-istio" in this namespace.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: llm-gateway
+spec:
+  gatewayClassName: istio
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same

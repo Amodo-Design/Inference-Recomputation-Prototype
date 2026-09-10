@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: llm-serving
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/<org>/<repo>.git
+    targetRevision: main
+    path: manifests/llm-serving
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: infver
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      # LLMInferenceService CRD arrives with the kubeflow app; Gateway API
+      # CRDs with gateway-api-crds — retry until both exist.
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m

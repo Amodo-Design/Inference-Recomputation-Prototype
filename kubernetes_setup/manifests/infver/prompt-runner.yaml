@@ -1,0 +1,77 @@
+# prompt-runner — in-cluster deterministic prompt suite service (vendored
+# from the earlier standalone openwebui_prompt_runner.py script).
+#
+# Drives the PromptBench suite through Open WebUI at a chosen prover model:
+# requests cross the verify-taps like any user chat, so every response lands
+# in the ledger and gets verified by the orchestrator's runners. Launched
+# and monitored from inf-ver-ui's Test Runner tab (one run at a time).
+#
+# PromptBench downloads its datasets (sst2/cola/gsm8k, small) on first use
+# into HF_HOME — an emptyDir, so a pod restart re-downloads (~seconds).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prompt-runner
+  labels:
+    app: prompt-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prompt-runner
+  template:
+    metadata:
+      labels:
+        app: prompt-runner
+    spec:
+      containers:
+        - name: prompt-runner
+          image: harbor.infver.local/infver_images/prompt-runner:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8200
+          env:
+            - name: OPENWEBUI_URL
+              value: http://open-webui:8080
+            # Open WebUI runs with WEBUI_AUTH=false; no key needed.
+            - name: OPEN_WEBUI_API_KEY
+              value: ""
+            # Benchmarking persistence: the prompt-runner owns the
+            # benchmarking_* tables in the ledger's Postgres and writes them
+            # directly (never via the ledger API). Unset = POST /runs 503s.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: infver-secrets
+                  key: DATABASE_URL
+            - name: HF_HOME
+              value: /data/hf
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /data/hf
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: hf-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prompt-runner
+spec:
+  selector:
+    app: prompt-runner
+  ports:
+    - port: 8200
+      targetPort: 8200

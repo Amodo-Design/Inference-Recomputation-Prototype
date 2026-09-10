@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: harbor
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://helm.goharbor.io
+    chart: harbor
+    targetRevision: 1.19.1
+    helm:
+      releaseName: harbor
+      valuesObject:
+        expose:
+          type: ingress
+          tls:
+            enabled: false
+          ingress:
+            className: nginx
+            hosts:
+              core: harbor.infver.local
+            annotations:
+              # Registry layer uploads can be multi-GB
+              nginx.ingress.kubernetes.io/proxy-body-size: "0"
+              nginx.ingress.kubernetes.io/ssl-redirect: "false"
+        # Served through the existing ingress-nginx / MetalLB LoadBalancer.
+        # Point DNS (or /etc/hosts) for harbor.infver.local at the
+        # ingress-nginx controller's external IP. Configure containerd/docker
+        # on each node to trust this as an insecure (HTTP) registry — README.
+        externalURL: http://harbor.infver.local
+        # Set your own admin password before first sync.
+        harborAdminPassword: <CHANGE_ME_HARBOR_ADMIN_PASSWORD>
+        persistence:
+          enabled: true
+          resourcePolicy: keep
+          persistentVolumeClaim:
+            registry:
+              storageClass: local-storage
+              size: 200Gi
+            database:
+              storageClass: local-storage
+              size: 10Gi
+            redis:
+              storageClass: local-storage
+              size: 5Gi
+            trivy:
+              storageClass: local-storage
+              size: 10Gi
+            jobservice:
+              jobLog:
+                storageClass: local-storage
+                size: 5Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: harbor
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

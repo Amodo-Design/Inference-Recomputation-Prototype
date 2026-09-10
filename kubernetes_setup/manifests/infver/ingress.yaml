@@ -1,0 +1,55 @@
+# All Inference Verification UIs/APIs, host-routed through the existing ingress-nginx /
+# MetalLB LoadBalancer (<ingress-lb-ip>). Add the hostnames to /etc/hosts —
+# see the README "DNS for the web UIs" section.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: infver
+  annotations:
+    # Chat uploads (open-webui) and ledger payloads can be large
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # Model responses can stream for a long time
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: chat.infver.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: open-webui
+                port:
+                  number: 8080
+    - host: verify.infver.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: inf-ver-ui
+                port:
+                  number: 3000
+    - host: ledger.infver.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-api
+                port:
+                  number: 8000
+    - host: writer.infver.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: message-writer
+                port:
+                  number: 8100

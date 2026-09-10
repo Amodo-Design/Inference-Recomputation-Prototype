@@ -1,0 +1,17 @@
+# Kubeflow's istio install applies a mesh-wide default-deny
+# (AuthorizationPolicy global-deny-all in the istio root namespace), which
+# also covers the auto-deployed llm-gateway Envoy — without an explicit
+# ALLOW, every request through the gateway gets "RBAC: access denied".
+# The model pods themselves have no sidecars, so enforcement happens only
+# at this gateway hop.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: llm-gateway-allow
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: llm-gateway
+  action: ALLOW
+  rules:
+    - {}

@@ -1,0 +1,33 @@
+# Scrapes the DCGM exporter DaemonSet deployed by the NVIDIA GPU Operator
+# (assumed pre-installed in the `gpu-operator` namespace). One exporter pod
+# runs per GPU node, so this yields per-GPU metrics for every node.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nvidia-dcgm-exporter
+  namespace: gpu-operator
+  labels:
+    app: nvidia-dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-dcgm-exporter
+  namespaceSelector:
+    matchNames:
+      - gpu-operator
+  endpoints:
+    - port: gpu-metrics
+      path: /metrics
+      # 1s scrape to match the exporter's collection interval, which is now
+      # DCGM_EXPORTER_INTERVAL=200 (200ms) on the GPU Operator's ClusterPolicy
+      # — hand-applied there (the operator install is outside this repo's
+      # GitOps). The exporter interval only needs to be <= every
+      # scrape interval using it; this monitor stays at 1s (see the
+      # `-fast` companion ServiceMonitor for the 200ms scrape).
+      interval: 1s
+      scrapeTimeout: 1s
+      relabelings:
+        # Expose which node each GPU metric came from
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace

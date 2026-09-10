@@ -1,0 +1,22 @@
+# inf-ver-runner builds from the repository root. Send only its inputs.
+**
+!inf-ver-runner/
+!inf-ver-runner/requirements.txt
+!inf-ver-runner/app/
+!inf-ver-runner/app/**
+!difr/
+!difr/difr/
+!difr/difr/gumbel_verify.py
+
+# Also exclude local artifacts placed inside source directories.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*api_key*.txt
+**/__pycache__/
+**/*.py[cod]
+**/logs/
+**/*.log
+**/data/
+**/tmp/

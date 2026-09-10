@@ -1,0 +1,64 @@
+# Tunables for the Inference Verification stack — the k8s equivalent of the compose .env file.
+# See each component's README / .env.example at the repo root for the semantics of each value.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: infver-config
+data:
+  # Orchestrator tunables: verifier vLLMs and runner Jobs are created on
+  # demand per model (see inf-ver-orchestrator.yaml). Pass thresholds live
+  # per-model in the ledger (NULL = paused), not in config.
+  ORCH_POLL_SECONDS: "15"
+  ORCH_RUNNER_IMAGE: harbor.infver.local/infver_images/inf-ver-runner:latest
+  # ServiceAccount runner Jobs run as (manifests/infver/inf-ver-runner-rbac.yaml):
+  # grants EndpointSlices get/list for per-pod GPU attribution, no pods access.
+  ORCH_RUNNER_SERVICE_ACCOUNT: inf-ver-runner
+  # Node-local HF model cache PVC (manifests/infver/hf-model-cache-pvc.yaml):
+  # the orchestrator seeds models once via seed Jobs and spawns verifier
+  # LLMISvcs with pvc:// URIs instead of re-downloading from HF per drain
+  # cycle. Remove this key (and the Deployment env entry) to fall back.
+  ORCH_MODEL_CACHE_PVC: hf-model-cache
+  # Concurrent verifications per runner Job; step 2-4 first — prompt_logprobs
+  # prefill is the memory-sensitive path. Takes effect on orchestrator restart,
+  # next drain's Jobs.
+  ORCH_RUNNER_MODEL_CONCURRENCY: "3"
+  # PINNED, and must match the serving LLMISvcs' image (manifests/llm-serving):
+  # difr's verifier re-implements this exact vLLM version's seeded sampler;
+  # a version bump can silently break prover/verifier correspondence and turn
+  # every verdict into `fail`. Bump all vllm images together and re-baseline.
+  # v0.25.1, run everywhere with VLLM_USE_V2_MODEL_RUNNER=0 (set in the
+  # orchestrator's vLLM template and on the serving LLMISvcs): the V1 model
+  # runner's per-request Philox stream is what difr's verifier replays;
+  # Model Runner V2 (default since v0.22) is stateless Triton noise and
+  # unreplayable. v0.25.1 also has the harmony return_token_ids fixes
+  # gpt-oss needs (broken before v0.11.1). Runner image torch must match
+  # this vllm's torch (2.11.0) — see inf-ver-runner/Dockerfile.
+  ORCH_VLLM_IMAGE: vllm/vllm-openai:v0.25.1
+  # Must stay >= the verify-taps' pinned INF_PROXY_TOP_K (50).
+  ORCH_VLLM_MAX_LOGPROBS: "200"
+  # Verifier context must exceed provers' 8192 — a replay needs prompt+output+1,
+  # so prover-window-filling outputs were structurally unverifiable at parity.
+  # Tune this limit to the memory available on your verifier GPUs.
+  ORCH_VLLM_MAX_MODEL_LEN: "16384"
+  # Example verifier placement; use the node hosting the model-cache PV.
+  ORCH_VLLM_NODE_SELECTOR: '{"kubernetes.io/hostname": "gpu-node-1"}'
+  # Optional per-model placement: map model names to node_selector and cache_pvc.
+  # Provision a matching local PV/PVC on each additional verifier node first.
+  ORCH_VLLM_PLACEMENT_OVERRIDES: '{}'
+---
+# Credentials. Replace every <CHANGE_ME_...> placeholder with your own values
+# before syncing (or manage this Secret out-of-band, e.g. sealed-secrets).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: infver-secrets
+type: Opaque
+stringData:
+  POSTGRES_USER: ledger
+  POSTGRES_PASSWORD: <CHANGE_ME_POSTGRES_PASSWORD>
+  POSTGRES_DB: ledger
+  # Must embed the same POSTGRES_PASSWORD as above.
+  DATABASE_URL: postgresql+psycopg://ledger:<CHANGE_ME_POSTGRES_PASSWORD>@infver-db:5432/ledger
+  # open-webui requires a non-empty API key even for open servers; any
+  # non-empty value works against an unauthenticated gateway.
+  OPENWEBUI_OPENAI_API_KEY: <CHANGE_ME_OR_ANY_NON_EMPTY_VALUE>

@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: infver
+resources:
+  - namespace.yaml
+  - config.yaml
+  - postgres.yaml
+  - ledger-api.yaml
+  - gpu-enricher.yaml
+  - analytics-api.yaml
+  - message-writer.yaml
+  - inf-ver-orchestrator.yaml
+  - prompt-runner.yaml
+  - inf-ver-ui.yaml
+  - open-webui.yaml
+  - ingress.yaml
+  - inf-ver-runner-rbac.yaml
+  - hf-model-cache-pvc.yaml
+configMapGenerator:
+  # Ledger DDL, applied by the postgres image on first init only. Copied from
+  # ../../../ledger/sql/ — keep in sync when the schema
+  # changes there (schema migrations on an existing volume are manual).
+  - name: ledger-init-sql
+    files:
+      - sql/001_verification_ledger.sql
+      - sql/002_add_event_start_times.sql
+      - sql/003_gpu_activity.sql
+generatorOptions:
+  # Stable name: the postgres Deployment references it directly, and a hash
+  # suffix would force pointless DB restarts on unrelated kustomize changes.
+  disableNameSuffixHash: true

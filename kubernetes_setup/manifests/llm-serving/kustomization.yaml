@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: infver
+resources:
+  - gateway.yaml
+  - gateway-authz.yaml
+  - body-based-routing.yaml
+  - qwen2-5-7b-instruct.yaml
+  - qwen2-5-1-5b-instruct.yaml
+  - gpt-oss-20b.yaml
+  - gpt-oss-120b.yaml

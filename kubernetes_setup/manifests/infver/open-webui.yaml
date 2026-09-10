@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+spec:
+  storageClassName: local-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # RWO local PV cannot be shared during a rolling update
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+        - name: open-webui
+          # Pinned release — :main is a moving tag and pod restarts silently
+          # pull whatever HEAD is that day (an untested build broke chat
+          # rendering on 2026-07-17). Bump deliberately.
+          image: ghcr.io/open-webui/open-webui:v0.11.0
+          ports:
+            - containerPort: 8080
+          env:
+            - name: WEBUI_AUTH
+              value: "false"
+            # Pin the JWT signing key. The image writes its generated key to
+            # /app/backend/.webui_secret_key — NOT under /app/backend/data —
+            # so every container restart rotates it and invalidates every
+            # browser's stored token. On v0.10.2 a stale token then triggered
+            # a signin/redirect loop on first open (login toast storm,
+            # 2026-07-27). Not secret-sensitive here: WEBUI_AUTH=false means
+            # anyone reaching the Service is auto-admin anyway; the key only
+            # provides session continuity across restarts.
+            - name: WEBUI_SECRET_KEY
+              value: <CHANGE_ME_RANDOM_HEX_SECRET>  # e.g. `openssl rand -hex 32`
+            # Env is authoritative each boot — don't let a stale connection
+            # persisted in the volume override the URL/key below.
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "false"
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            # All models via the LLM gateway (manifests/llm-serving). KServe
+            # publishes path-prefixed routes per model
+            # (/<namespace>/<llmisvc-name>/v1/...), so each model is a
+            # separate OpenAI connection — one entry per model, semicolon
+            # separated. Capture happens in each pod's verify-tap sidecar,
+            # so no tap is needed on this path. When adding a model, append
+            # its base URL here (and a matching key in OPENAI_API_KEYS).
+            - name: OPENAI_API_BASE_URLS
+              value: http://llm-gateway-istio.infver.svc.cluster.local/infver/qwen2-5-7b-instruct/v1;http://llm-gateway-istio.infver.svc.cluster.local/infver/qwen2-5-1-5b-instruct/v1;http://llm-gateway-istio.infver.svc.cluster.local/infver/gpt-oss-20b/v1
+            - name: OPENAI_API_KEYS
+              value: dummy;dummy;dummy
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+spec:
+  selector:
+    app: open-webui
+  ports:
+    - port: 8080
+      targetPort: 8080

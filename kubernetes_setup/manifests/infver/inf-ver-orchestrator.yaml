@@ -1,0 +1,133 @@
+# inf-ver-orchestrator — reconciles per-model verifier pairs.
+#
+# Watches the ledger's pending verification events (grouped by model) and,
+# for every model with pending events AND a non-NULL verification_threshold
+# (set in inf-ver-ui), creates:
+#   - LLMInferenceService verify-<slug>   (router-less, tap-less vLLM: its
+#     traffic must never cross the gateway/EPP or a verify-tap, or the
+#     verifier's re-runs would land in the ledger as prover events)
+#   - Job inf-ver-runner-<slug>           (drains that model's queue, exit 0)
+# and reaps the pair when the Job succeeds with nothing pending, freeing the
+# GPU. Models with a NULL threshold are skipped — their events stay pending
+# and verify retroactively once a threshold is set.
+#
+# It only ever lists/deletes resources labeled
+# app.kubernetes.io/managed-by=inf-ver-orchestrator, and maps them to ledger
+# models via the infver.io/model-id label.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inf-ver-orchestrator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inf-ver-orchestrator
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["llminferenceservices"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Read-only pod access for debugging/inspection of runner pods.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inf-ver-orchestrator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: inf-ver-orchestrator
+subjects:
+  - kind: ServiceAccount
+    name: inf-ver-orchestrator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inf-ver-orchestrator
+  labels:
+    app: inf-ver-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inf-ver-orchestrator
+  template:
+    metadata:
+      labels:
+        app: inf-ver-orchestrator
+    spec:
+      serviceAccountName: inf-ver-orchestrator
+      containers:
+        - name: inf-ver-orchestrator
+          image: harbor.infver.local/infver_images/inf-ver-orchestrator:latest
+          imagePullPolicy: Always
+          env:
+            - name: LEDGER_API_URL
+              value: http://ledger-api:8000
+            - name: ORCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ORCH_POLL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_POLL_SECONDS
+            - name: ORCH_RUNNER_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_RUNNER_IMAGE
+            - name: ORCH_RUNNER_SERVICE_ACCOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_RUNNER_SERVICE_ACCOUNT
+            - name: ORCH_RUNNER_MODEL_CONCURRENCY
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_RUNNER_MODEL_CONCURRENCY
+            - name: ORCH_MODEL_CACHE_PVC
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_MODEL_CACHE_PVC
+            - name: ORCH_VLLM_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_VLLM_IMAGE
+            - name: ORCH_VLLM_MAX_LOGPROBS
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_VLLM_MAX_LOGPROBS
+            - name: ORCH_VLLM_MAX_MODEL_LEN
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_VLLM_MAX_MODEL_LEN
+            - name: ORCH_VLLM_NODE_SELECTOR
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_VLLM_NODE_SELECTOR
+            - name: ORCH_VLLM_PLACEMENT_OVERRIDES
+              valueFrom:
+                configMapKeyRef:
+                  name: infver-config
+                  key: ORCH_VLLM_PLACEMENT_OVERRIDES
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi

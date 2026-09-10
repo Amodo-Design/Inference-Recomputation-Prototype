@@ -1,0 +1,109 @@
+# Slim Kubeflow: only what the Inference Verification platform actually uses — KServe (incl.
+# LLMInferenceService) for serving and the Kubeflow Trainer for custom LLM
+# training, plus their infrastructure (cert-manager, Istio, Knative).
+#
+# Cherry-picked from kubeflow/manifests `example/kustomization.yaml` at tag
+# 26.03.1 (same pinned tag as before). Deliberately DROPPED, relative to the
+# full example: Pipelines, Katib, Central Dashboard, Notebooks, Dex +
+# oauth2-proxy (only the dashboard needed auth), user-namespace, KServe
+# models web app, Spark operator, model registry + model catalog,
+# kubeflow-istio-resources (dashboard gateway/authz).
+#
+# Notes:
+# - istio-install/overlays/oauth2-proxy only *declares* an ext-authz provider
+#   in meshconfig; nothing deploys or uses oauth2-proxy here — harmless, and
+#   it keeps us aligned with the upstream-tested istio overlay.
+# - Knative stays: the Kubeflow KServe packaging defaults classic
+#   InferenceServices to serverless mode.
+# - To restore a dropped component, add its line back from the upstream
+#   example kustomization (keep the same ref).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+sortOptions:
+  order: legacy
+  legacySortOptions:
+    orderFirst:
+      - Namespace
+      - ResourceQuota
+      - StorageClass
+      - CustomResourceDefinition
+      - MutatingWebhookConfiguration
+      - ServiceAccount
+      - PodSecurityPolicy
+      - NetworkPolicy
+      - Role
+      - ClusterRole
+      - RoleBinding
+      - ClusterRoleBinding
+      - ConfigMap
+      - Secret
+      - Endpoints
+      - Service
+      - LimitRange
+      - PriorityClass
+      - PersistentVolume
+      - PersistentVolumeClaim
+      - Deployment
+      - StatefulSet
+      - CronJob
+      - PodDisruptionBudget
+    orderLast:
+      - ValidatingWebhookConfiguration
+resources:
+  - https://github.com/kubeflow/manifests//common/cert-manager/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/cert-manager/overlays/kubeflow?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/istio/istio-crds/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/istio/istio-namespace/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/istio/istio-install/overlays/oauth2-proxy?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/knative/knative-serving/overlays/gateways?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/istio/cluster-local-gateway/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/kubeflow-namespace/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//common/kubeflow-roles/base?ref=26.03.1
+  - https://github.com/kubeflow/manifests//applications/trainer/overlays?ref=26.03.1
+  - https://github.com/kubeflow/manifests//applications/kserve/kserve?ref=26.03.1
+  # Restores the llmisvc preset configs that the kubeflow packaging strips
+  # (see the file's header) — without them LLMInferenceService cannot
+  # reconcile at all.
+  - llmisvc-configs.yaml
+patches:
+  # Istio gates Gateway API Inference Extension support (InferencePool
+  # backends) behind this flag; without it every LLMISvc HTTPRoute fails
+  # ResolvedRefs with "InferencePool is not enabled".
+  - target:
+      kind: Deployment
+      name: istiod
+      namespace: istio-system
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: istiod
+        namespace: istio-system
+      spec:
+        template:
+          spec:
+            containers:
+              - name: discovery
+                env:
+                  - name: ENABLE_GATEWAY_API_INFERENCE_EXTENSION
+                    value: "true"
+  # Upstream 26.03.1 bug: kserve-controller-manager disables istio sidecar
+  # injection but llmisvc-controller-manager does not. With injection, the
+  # sidecar intercepts the webhook port (9443) expecting mTLS and the API
+  # server's webhook calls fail with EOF — LLMInferenceService creation is
+  # impossible. Same fix upstream applies to the classic controller.
+  - target:
+      kind: Deployment
+      name: llmisvc-controller-manager
+      namespace: kubeflow
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: llmisvc-controller-manager
+        namespace: kubeflow
+      spec:
+        template:
+          metadata:
+            annotations:
+              sidecar.istio.io/inject: "false"

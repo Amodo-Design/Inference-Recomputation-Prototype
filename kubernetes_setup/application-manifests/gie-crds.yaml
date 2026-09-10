@@ -1,0 +1,22 @@
+# Gateway API Inference Extension CRDs (InferencePool etc.) — prerequisite
+# for KServe LLMInferenceService's managed scheduler (endpoint picker), which
+# routes multi-model OpenAI traffic by model name / vLLM load.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gie-crds
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kubernetes-sigs/gateway-api-inference-extension.git
+    targetRevision: v1.4.0
+    path: config/crd
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false # CRDs — never auto-prune
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
