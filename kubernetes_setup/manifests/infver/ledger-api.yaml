@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: ledger-api
-          image: harbor.infver.local/infver_images/ledger-api:latest
+          image: <registry-host>/infver_images/ledger-api:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

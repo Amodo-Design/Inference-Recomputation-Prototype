@@ -49,7 +49,7 @@ spec:
             memory: 48Gi
             nvidia.com/gpu: "1"
       - name: verify-tap # sidecar — takes the pod's real serving port
-        image: harbor.infver.local/infver_images/inf-proxy:latest
+        image: <registry-host>/infver_images/inf-proxy:latest
         imagePullPolicy: Always
         ports:
           - containerPort: 8000

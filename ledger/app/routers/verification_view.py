@@ -9,7 +9,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import Text, cast, delete, func, or_, select
+from sqlalchemy import Text, cast, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -95,6 +95,25 @@ async def view(
         .limit(limit)
         .offset(offset)
     )
+    page_rows = rows.all()
+
+    # Capture status for just this page's inference events, in one query
+    # against the inference_event_capture view (sql/004) rather than one call
+    # per row from the UI.
+    capture: dict[uuid.UUID, tuple[str, int]] = {}
+    inference_ids = list({inf.id for _ver, inf, _mdl, _vm in page_rows})
+    if inference_ids:
+        capture_rows = await session.execute(
+            text(
+                "SELECT inference_event_id, capture_status, findings "
+                "FROM inference_event_capture WHERE inference_event_id = ANY(:ids)"
+            ),
+            {"ids": inference_ids},
+        )
+        capture = {
+            row.inference_event_id: (row.capture_status, int(row.findings))
+            for row in capture_rows
+        }
 
     items = [
         VerificationEventView(
@@ -123,8 +142,12 @@ async def view(
             input_text_representation=inf.input_text_representation,
             output_text_representation=inf.output_text_representation,
             verifier_detail=ver.verifier_detail,
+            capture_status=capture.get(inf.id, ("uncovered", 0))[0],
+            capture_findings=capture.get(inf.id, ("uncovered", 0))[1],
+            inference_started_at=inf.started_at,
+            inference_ts=inf.ts,
         )
-        for ver, inf, mdl, verifier_mdl in rows.all()
+        for ver, inf, mdl, verifier_mdl in page_rows
     ]
     return VerificationEventViewPage(
         items=items, total=total or 0, limit=limit, offset=offset

@@ -18,7 +18,7 @@ kubectl apply -f application-manifests/
 | `kubeflow` | `manifests/kubeflow-slim` | KServe, Istio, Knative, cert-manager, Trainer (no dashboard) |
 | `gateway-api-crds`, `gie-crds` | upstream CRDs v1.5.1 / v1.4.0 | Prerequisites for KServe `LLMInferenceService` routing |
 | `llm-serving` | `manifests/llm-serving` | Prover models as `LLMInferenceService`s with the verify-tap sidecar, behind one Gateway |
-| `infver` | `manifests/infver` | The verification stack: Postgres, ledger API, message writer, orchestrator, analytics API, GPU enricher, prompt runner, Open WebUI, verification UI |
+| `infver` | `manifests/infver` | The verification stack: Postgres, ledger API, message writer, orchestrator, analytics API, GPU enricher, prompt runner, Open WebUI, verification UI, and — where a hardware tap is deployed — the frame processor and its link health check |
 
 The configuration provides an example layout with three placeholder node names.
 The sections below describe what you will need to decide or change to run it
@@ -54,6 +54,14 @@ Search the directory for these before the first sync:
 - `<CHANGE_ME_...>` values: the Postgres password and Open WebUI secret in
   `manifests/infver/config.yaml`, the Harbor admin password in
   `application-manifests/harbor.yaml`.
+- `<monitor-iface-a>`, `<monitor-iface-b>`, `<tapped-node-mac>`,
+  `<capture-host-mac>`, `<tapped-node-ip>`, `<capture-host-ip>` and the two
+  `<… frame digest>` values in
+  `manifests/infver/frame-processor.yaml` and
+  `manifests/infver/tapped-link-health.yaml`. These describe one physical link
+  and have no sensible defaults; the digests can only be read off a capture
+  (`tools/account.py`). Only needed if you deploy the hardware tap — otherwise
+  drop both Deployments from `manifests/infver/kustomization.yaml`.
 
 ## Storage
 
@@ -75,21 +83,27 @@ Eviction is manual: delete the model's directory under
 
 ## Networking and DNS
 
-The stack uses hostnames under `.infver.local`: `chat`, `verify`, `ledger`,
-`writer`, `grafana`, `prometheus` and `harbor`. They are not in any DNS
-server. Map them to `<ingress-lb-ip>` in `/etc/hosts` on every workstation
-that needs the UIs, and map at least `harbor.infver.local` on every cluster
-node so the container runtime can pull images. To use other hostnames, change
-them in `application-manifests/*.yaml` and `manifests/infver/ingress.yaml`.
+The UIs and APIs are served under a domain referred to throughout as
+`<domain>`: `chat`, `verify`, `ledger`, `writer`, `grafana` and `prometheus`.
+Pick a domain, substitute it in `application-manifests/*.yaml` and
+`manifests/infver/ingress.yaml`, and either publish those names in DNS or map
+them to `<ingress-lb-ip>` in `/etc/hosts` on every workstation that needs the
+UIs.
+
+The image registry is referred to throughout as `<registry-host>`: pick a
+hostname for it, substitute it in `application-manifests/harbor.yaml`, the
+`image:` references in `manifests/infver/*.yaml` and `ORCH_RUNNER_IMAGE` in
+`manifests/infver/config.yaml`, and map it on every cluster node so the
+container runtime can pull images.
 
 Harbor is served over plain HTTP, so each node's container runtime must trust
 it as an insecure registry. For containerd:
 
 ```toml
-# /etc/containerd/certs.d/harbor.infver.local/hosts.toml
-server = "http://harbor.infver.local"
+# /etc/containerd/certs.d/<registry-host>/hosts.toml
+server = "http://<registry-host>"
 
-[host."http://harbor.infver.local"]
+[host."http://<registry-host>"]
   capabilities = ["pull", "resolve", "push"]
   skip_verify = true
 ```
@@ -105,15 +119,23 @@ and `ORCH_RUNNER_IMAGE` in `manifests/infver/config.yaml`, add an
 `imagePullSecret` if the registry is private, and drop the `harbor`
 application.
 
-As configured, the `infver` manifests pull nine custom images from the Harbor
+As configured, the `infver` manifests pull ten custom images from the Harbor
 project `infver_images`, which is public so no pull secret is needed. Each
 service directory at the repository root has a `Dockerfile`; build each one
 for `linux/amd64` and push it under the name the manifests reference
 (`ledger-api`, `message-writer`, `inf-proxy`, `inf-ver-orchestrator`,
 `inf-ver-runner`, `inf-ver-ui`, `analytics-api`, `gpu-enricher`,
-`prompt-runner`). The `ledger-api` image builds from `ledger/`, and
-`inf-ver-runner` must be built with the repository root as its context
-because it copies the vendored `difr/` package.
+`prompt-runner`, `frame-processor`). The `ledger-api` image builds from
+`ledger/`. Two must be built with the repository root as their context,
+because each copies a file from outside its own directory: `inf-ver-runner`
+(the vendored `difr/` package) and `frame-processor` (`inf-proxy`'s
+extractors).
+
+`frame-processor` and `tapped-link-health` are only reached when the hardware
+tap is deployed; both Deployments can be removed from
+`manifests/infver/kustomization.yaml` if it is not. `tapped-link-health` runs
+the `frame-processor` image under a different command, so it adds no image of
+its own.
 
 The runner image and the verifier vLLM image are also referenced from
 `manifests/infver/config.yaml` (`ORCH_RUNNER_IMAGE`, `ORCH_VLLM_IMAGE`). The
@@ -181,12 +203,12 @@ ServiceMonitor's keep rule.
 
 | Service | URL | Credentials |
 |---|---|---|
-| Open WebUI | http://chat.infver.local | none (`WEBUI_AUTH=false`) |
-| Verification UI | http://verify.infver.local | none |
-| Ledger API | http://ledger.infver.local | none; docs at `/docs` |
-| Grafana | http://grafana.infver.local | `admin`, password in the `kube-prometheus-stack-grafana` Secret |
-| Prometheus | http://prometheus.infver.local | none |
-| Harbor | http://harbor.infver.local | `admin`, the password you set in `harbor.yaml` |
+| Open WebUI | http://chat.<domain> | none (`WEBUI_AUTH=false`) |
+| Verification UI | http://verify.<domain> | none |
+| Ledger API | http://ledger.<domain> | none; docs at `/docs` |
+| Grafana | http://grafana.<domain> | `admin`, password in the `kube-prometheus-stack-grafana` Secret |
+| Prometheus | http://prometheus.<domain> | none |
+| Harbor | http://<registry-host> | `admin`, the password you set in `harbor.yaml` |
 | ArgoCD | http://<ingress-lb-ip>/ | `admin`, password in `argocd-initial-admin-secret` |
 
 ## Security
@@ -195,4 +217,7 @@ This is a starting point for a private cluster, not a hardened deployment.
 The UIs and APIs have no authentication, Harbor is HTTP-only, and the
 LoadBalancer IP is assumed to be reachable only from the cluster's LAN. Add
 TLS and authentication before exposing any of it more widely.
-Ensure secret management is converted to a production grade process is serving to a wider audience.
+
+Secrets here are plain `<CHANGE_ME_...>` placeholders committed as ConfigMap
+and Secret manifests. Convert secret management to a production-grade process
+before serving a wider audience.

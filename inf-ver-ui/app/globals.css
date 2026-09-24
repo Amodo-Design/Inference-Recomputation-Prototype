@@ -1148,7 +1148,7 @@ pre {
   font-size: 0.875rem;
 }
 
-/* Chart chrome (Task 4): frame header, controls row, legend, tooltip. */
+/* Chart chrome: frame header, controls row, legend, tooltip. */
 .chart-frame {
   display: flex;
   flex-direction: column;
@@ -1214,7 +1214,7 @@ pre {
   min-width: 90px;
 }
 
-/* Run summary strip (analysis tab, Task 7): dt/dd pairs describing the
+/* Run summary strip (analysis tab): dt/dd pairs describing the
    run selected via the picker, above the charts. */
 /* The strip and the economics panel are standalone stacked cards (not in
    the charts grid) — give them explicit gaps so run info, economics, and
@@ -1256,7 +1256,7 @@ pre {
   font-size: 0.875rem;
 }
 
-/* Run economics panel (analysis tab, Task 4): per-model stat-card layout,
+/* Run economics panel (analysis tab): per-model stat-card layout,
    redesigned off the wide table so nothing needs horizontal scroll — every
    grid below wraps via auto-fit/minmax instead of growing past the
    card's width. */
@@ -1503,4 +1503,169 @@ pre {
 
 .axis-tick-faded line {
   stroke-opacity: 0.4;
+}
+
+/* Capture: was the tapped link fully accounted for.
+   A second axis beside the verdict — outlined, never filled, so it is not
+   read as a pass/fail pill. */
+.capture {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: transparent;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+a.capture:hover {
+  border-color: var(--teal);
+  color: var(--ink);
+}
+
+.capture-complete {
+  border-color: var(--pass);
+  color: var(--pass);
+}
+
+.capture-tainted,
+.capture-partial {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.capture-uncovered {
+  border-style: dashed;
+  color: var(--para);
+}
+
+.capture-pending,
+.capture-unknown {
+  border-style: dotted;
+  color: var(--para);
+}
+
+.capture-count {
+  border-radius: 999px;
+  padding: 0 6px;
+  background: var(--unknown);
+  color: var(--cream);
+  font-size: 0.625rem;
+  letter-spacing: 0;
+}
+
+.capture-stats {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.stat-small {
+  font-size: 1.125rem !important;
+  word-break: break-all;
+}
+
+.capture-missing-row td {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 6px,
+    rgba(62, 78, 77, 0.05) 6px,
+    rgba(62, 78, 77, 0.05) 12px
+  );
+  color: var(--para);
+  font-style: italic;
+}
+
+.capture-classes {
+  font-size: 0.75rem;
+  white-space: normal;
+  max-width: 320px;
+}
+
+.direction {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.direction-out {
+  color: var(--terracotta);
+}
+
+.direction-in {
+  color: var(--pass);
+}
+
+.direction-unknown {
+  color: var(--para);
+}
+
+.breadcrumbs {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--para);
+  margin: 4px 0 12px;
+}
+
+.filters-inline {
+  display: flex;
+  gap: 18px;
+  font-size: 0.875rem;
+}
+
+.notice {
+  padding: 14px 18px;
+  border: 1px dashed var(--hairline);
+  border-radius: var(--radius-card);
+  color: var(--para);
+  margin-bottom: 18px;
+}
+
+.capture-sample {
+  background: var(--cream);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+
+.capture-sample-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.hexdump {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 10px 0 0;
+}
+
+.capture-focus {
+  display: grid;
+  gap: 6px;
+  border-style: solid;
+}
+
+.capture-focus > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink);
 }

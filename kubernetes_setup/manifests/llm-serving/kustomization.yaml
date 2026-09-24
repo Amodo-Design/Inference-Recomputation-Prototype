@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: infver
 resources:
   - gateway.yaml
+  - serving-priority.yaml
   - gateway-authz.yaml
   - body-based-routing.yaml
   - qwen2-5-7b-instruct.yaml

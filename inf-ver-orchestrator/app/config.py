@@ -150,7 +150,7 @@ def load_settings() -> Settings:
         poll_seconds=_as_float(os.getenv("ORCH_POLL_SECONDS"), 15.0),
         runner_image=os.getenv(
             "ORCH_RUNNER_IMAGE",
-            "harbor.infver.local/infver_images/inf-ver-runner:latest",
+            "<registry-host>/infver_images/inf-ver-runner:latest",
         ),
         vllm_image=_require_pinned_image(os.getenv("ORCH_VLLM_IMAGE"), "ORCH_VLLM_IMAGE"),
         vllm_max_logprobs=_as_int(os.getenv("ORCH_VLLM_MAX_LOGPROBS"), 200),

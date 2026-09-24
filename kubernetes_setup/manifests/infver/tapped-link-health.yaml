@@ -1,0 +1,105 @@
+# tapped-link-health (responder half) — answers the health datagram gpu-node-2
+# sends across the tapped link, so that silence on that link becomes readable.
+# Source: frame-processor/tools/tapped_link_health.py.
+#
+# Why this exists. Every rule frame-processor applies is a rule about a frame that
+# arrived, and gpu-node-2's traffic profile has been curated down to almost
+# nothing — no CNI, no kubelet, vLLM telemetry disabled. So a link with no
+# inference on it produces no frames at all, and every one of those rules is
+# satisfied by nothing arriving. A capture that has gone blind therefore
+# agrees with a quiet link in every observable, and writes a window that is
+# `complete` with zero frames in it. The health check removes the ambiguity: one
+# datagram every 30s is asserted to cross this link, so absence is evidence.
+#
+# The two halves and where they run:
+#   - SENDER on the tapped node. Not here — it runs outside the cluster, as
+#     a systemd unit, using the same tools/tapped_link_health.py in `send`
+#     mode. See isolated_prover_setup/tapped-link-health/.
+#   - RESPONDER here on the capture host, which holds the far end of the
+#     tapped node's isolated /30 and routes for it.
+#
+# It answers rather than pulses because a passive tap sits inline: the monitor
+# port for a direction carries what that end put on the wire, so a datagram sent
+# into a link severed downstream of the tap still reaches the tap and still
+# reads healthy. A reply cannot be produced that way — it exists only if the
+# request arrived. And because the two legs travel on physically separate
+# signal paths, they land on different monitor ports: a request that keeps
+# arriving while the answer stops localises the fault to this end.
+#
+# NOT a sidecar in the frame-processor pod, deliberately. A health check that dies
+# whenever the observer dies cannot distinguish "the capture went blind" from
+# "the check stopped", which is the one distinction it exists to make. Same
+# image, separate lifecycle.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tapped-link-health
+  labels:
+    app: tapped-link-health
+spec:
+  replicas: 1
+  # Never two responders: a second one answering the same requests would
+  # double the ACK leg and every extra frame is a beat-unscheduled finding.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tapped-link-health
+  template:
+    metadata:
+      labels:
+        app: tapped-link-health
+    spec:
+      # The routing end of gpu-node-2's /30. Same node as frame-processor, for a
+      # different reason: frame-processor is here because the monitor cables land
+      # here, this is here because the link's local address is here.
+      nodeSelector:
+        kubernetes.io/hostname: gpu-node-1
+      # Load-bearing, not boilerplate. In a CNI namespace this pod cannot bind
+      # that address at all, and its replies would leave with a veth's source
+      # MAC and a NAT'd address — so every beat would reach frame-processor as
+      # mac-unknown and ip-outside-link rather than as a beat.
+      hostNetwork: true
+      containers:
+        - name: tapped-link-health
+          # The frame-processor image, running a different entrypoint. Same image on
+          # purpose: the payload bytes this puts on the wire and the digest
+          # FRAME_PROCESSOR_EXPECTED_PINS is set to are one fact, and shipping them
+          # together removes the step where they could drift apart.
+          image: <registry-host>/infver_images/frame-processor:latest
+          imagePullPolicy: Always
+          # Bound by ADDRESS, not by interface name, so nothing here has to
+          # know which NIC holds the /30 — and it can never accidentally bind
+          # a monitor port, which could not transmit anyway.
+          command:
+            - python3
+            - /app/tools/tapped_link_health.py
+            - respond
+            - --bind
+            - "<capture-host-ip>"
+            - --port
+            - "9999"
+          securityContext:
+            # Unlike frame-processor this needs nothing: 9999 is above 1024, so no
+            # NET_BIND_SERVICE, and it opens a UDP socket rather than an
+            # AF_PACKET one, so no NET_RAW.
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            # One socket, one 66-byte reply every 30 seconds, asleep between.
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      # hostNetwork means port 9999 is a HOST-wide port on the capture host. Confirm
+      # nothing else holds it (`ss -lunp | grep 9999`) before deploying; a
+      # collision shows up as a CrashLoop with EADDRINUSE.
+      #
+      # No dnsPolicy override needed: this pod resolves nothing. It only ever
+      # replies to the address a datagram came from.

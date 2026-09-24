@@ -9,7 +9,7 @@ data:
   # demand per model (see inf-ver-orchestrator.yaml). Pass thresholds live
   # per-model in the ledger (NULL = paused), not in config.
   ORCH_POLL_SECONDS: "15"
-  ORCH_RUNNER_IMAGE: harbor.infver.local/infver_images/inf-ver-runner:latest
+  ORCH_RUNNER_IMAGE: <registry-host>/infver_images/inf-ver-runner:latest
   # ServiceAccount runner Jobs run as (manifests/infver/inf-ver-runner-rbac.yaml):
   # grants EndpointSlices get/list for per-pod GPU attribution, no pods access.
   ORCH_RUNNER_SERVICE_ACCOUNT: inf-ver-runner

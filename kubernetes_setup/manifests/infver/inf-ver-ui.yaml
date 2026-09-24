@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: inf-ver-ui
-          image: harbor.infver.local/infver_images/inf-ver-ui:latest
+          image: <registry-host>/infver_images/inf-ver-ui:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

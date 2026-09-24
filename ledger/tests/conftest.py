@@ -21,7 +21,10 @@ from app.database import get_session
 from app.main import app
 
 SQL_DIR = Path(__file__).resolve().parent.parent / "sql"
-TABLES = "inference_event, verification_event, model_deployment, model, hardware, hardware_owner"
+TABLES = (
+    "capture_finding, capture_window, inference_event, verification_event, "
+    "model_deployment, model, hardware, hardware_owner"
+)
 
 
 async def _load_schema(engine) -> None:

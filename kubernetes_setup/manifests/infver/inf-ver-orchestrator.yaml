@@ -66,7 +66,7 @@ spec:
       serviceAccountName: inf-ver-orchestrator
       containers:
         - name: inf-ver-orchestrator
-          image: harbor.infver.local/infver_images/inf-ver-orchestrator:latest
+          image: <registry-host>/infver_images/inf-ver-orchestrator:latest
           imagePullPolicy: Always
           env:
             - name: LEDGER_API_URL

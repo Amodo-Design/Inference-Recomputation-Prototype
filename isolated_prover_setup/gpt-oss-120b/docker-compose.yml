@@ -1,0 +1,120 @@
+# A vLLM prover served outside Kubernetes, on the node carrying the hardware
+# tap. The non-Kubernetes replacement for the LLMInferenceService in
+# kubernetes_setup/manifests/llm-serving/: the node leaves the cluster so that
+# every byte it puts on the wire can be accounted for.
+#
+# ArgoCD does not watch this directory. Nothing here is applied automatically;
+# it is deployed by hand on the node (see README.md).
+services:
+  vllm-120b:
+    # PINNED, and load-bearing for verification. difr's verifier re-implements
+    # this exact vLLM version's seeded (Gumbel-max) sampler, and the
+    # correspondence only holds for the version it was validated against.
+    # Must stay equal to ORCH_VLLM_IMAGE in
+    # kubernetes_setup/manifests/infver/config.yaml.
+    # Symptom of drift: verdicts flip to `fail` with exact-0.0 margins on
+    # matching tokens. Never `:latest`.
+    image: vllm/vllm-openai:v0.25.1
+    container_name: vllm-120b
+    restart: unless-stopped
+
+    # NCCL and the engine's worker processes need a large /dev/shm. The llm-d
+    # preset mounted one in Kubernetes; this is the compose equivalent, and it
+    # is the first suspect if the engine crashes during init.
+    ipc: host
+
+    # Bound to the tapped interface only, never 0.0.0.0. A listener on another
+    # interface would be reachable by a path the tap cannot see, which
+    # silently voids the "all traffic is observed" claim.
+    #
+    # No default: this address is a property of the node, and falling back to
+    # someone else's would either fail to bind or bind the wrong interface
+    # quietly. Compose refuses to start until .env sets it.
+    ports:
+      - "${BIND_ADDR:?set BIND_ADDR in .env (see .env.example)}:${PORT:-8000}:8000"
+
+    # Mounted read-only and addressed by LOCAL PATH, not by HuggingFace model
+    # id: the directory must be a plain model tree (config.json + safetensors
+    # shards), NOT a hub-format cache, or HF_HOME resolves to an empty hub/
+    # and re-downloads the whole model.
+    volumes:
+      - ${MODEL_DIR:?set MODEL_DIR in .env (see .env.example)}:/models/gpt-oss-120b:ro
+      - /opt/vllm-cache:/cache
+
+    environment:
+      # Model Runner V2 (vLLM's default since v0.22) samples with a stateless
+      # Triton kernel that difr's verifier cannot replay. The V1 runner's
+      # per-request Philox stream IS the verification contract. Pin V1.
+      VLLM_USE_V2_MODEL_RUNNER: "0"
+      # No HuggingFace egress, ever. Even with a local path the HF libraries
+      # will otherwise reach out for revision metadata — on a node whose entire
+      # traffic profile has to be enumerable, that is an unaccounted flow.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      # vLLM reports anonymous usage statistics by default. On an otherwise
+      # idle node this is easily the largest contributor to outbound bytes,
+      # and the only thing resolving names at all. Encrypted, third-party and
+      # periodic, so the tap can see that it happened but never what it
+      # carried. DO_NOT_TRACK is the cross-project spelling of the same
+      # opt-out.
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      TIKTOKEN_RS_CACHE_DIR: "/cache/tiktoken-rs"
+      TIKTOKEN_CACHE_DIR: "/cache/tiktoken"
+
+    # Mirrors the command the LLMInferenceService used, so serving behaviour is
+    # identical to what the ledger already holds events for.
+    #
+    # Deliberately NO --tensor-parallel-size: the verifier that replays this
+    # model runs TP=1. A TP mismatch changes reduction order and the replay has
+    # never been validated across one.
+    #
+    # Prefix caching is deliberately LEFT ON (vLLM's default). A prefix-cached
+    # prefill might look like a reason for replay mismatches, since the
+    # verifier always replays with a cold cache, but it is not: a prover
+    # serving with prefix caching enabled still reproduces bit-exactly.
+    # Unpinned sampling is the cause worth looking for instead — see the
+    # README. Disabling prefix caching costs a full re-prefill of the
+    # conversation every turn, for no correctness benefit.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        exec vllm serve /models/gpt-oss-120b
+        --served-model-name openai/gpt-oss-120b
+        --port 8000
+        --disable-uvicorn-access-log
+        --max-model-len 8192
+
+    # One GPU. Leaving the node's others unallocated leaves room to bring a
+    # verifier back onto it without re-planning.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${GPU_ID:-0}"]
+              capabilities: [gpu]
+
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+    # A large model takes many minutes to load; the container is not ready
+    # until it answers.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15m
+
+    # vLLM takes time to release the GPU; SIGKILL at 30s can leave it wedged.
+    stop_grace_period: 2m
+
+    # Bounded logs: the same filesystem usually holds the model cache and
+    # image store.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

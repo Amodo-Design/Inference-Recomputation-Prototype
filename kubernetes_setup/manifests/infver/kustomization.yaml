@@ -16,6 +16,8 @@ resources:
   - ingress.yaml
   - inf-ver-runner-rbac.yaml
   - hf-model-cache-pvc.yaml
+  - frame-processor.yaml
+  - tapped-link-health.yaml
 configMapGenerator:
   # Ledger DDL, applied by the postgres image on first init only. Copied from
   # ../../../ledger/sql/ — keep in sync when the schema
@@ -25,6 +27,7 @@ configMapGenerator:
       - sql/001_verification_ledger.sql
       - sql/002_add_event_start_times.sql
       - sql/003_gpu_activity.sql
+      - sql/004_capture_accounting.sql
 generatorOptions:
   # Stable name: the postgres Deployment references it directly, and a hash
   # suffix would force pointless DB restarts on unrelated kustomize changes.

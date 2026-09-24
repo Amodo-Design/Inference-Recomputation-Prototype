@@ -1,0 +1,100 @@
+# The sender half of the tapped-link health check, on the tapped node. Its
+# answering half is a Kubernetes Deployment on the capture host
+# (kubernetes_setup/manifests/infver/tapped-link-health.yaml).
+#
+# ArgoCD does not watch this directory. Deployed by hand, like the prover.
+#
+# What it does: sends one fixed 73-byte UDP datagram across the tapped link
+# every 30 seconds, which the capture host answers. frame-processor is told to expect both
+# legs, so if either stops arriving the window covering it is INCOMPLETE
+# rather than clean. Without it, a link with no inference on it produces no
+# frames at all, every rule frame-processor applies is satisfied by nothing
+# arriving, and a capture that has gone blind is indistinguishable from a
+# quiet link.
+services:
+  tapped-link-health:
+    # Borrowed for its Python interpreter and nothing else.
+    #
+    # This node contacts no registry, so the image has to be one that is
+    # already here — and the only one that is, is vLLM's. Any image with a
+    # python3 on PATH would do; the program is a single stdlib-only file,
+    # mounted below, with no dependencies to install and nothing to build.
+    #
+    # Keep this equal to the image the prover's compose file pins. That file
+    # pins it for a verification reason (difr replays that exact vLLM
+    # version's sampler); this one only needs *an* interpreter, so when that
+    # tag moves, move this one with it rather than leaving a second large
+    # image on the node.
+    image: ${IMAGE:?set IMAGE in .env to one already on this node}
+    # Never reach for a registry, even if the image is missing. Failing to
+    # start is the right outcome then: a pull would be a connection this node
+    # is not supposed to make.
+    pull_policy: never
+    container_name: tapped-link-health
+    restart: unless-stopped
+
+    # The program itself. One file, ~10 KB, read-only, copied from
+    # frame-processor/tools/ at deploy time rather than vendored here — the bytes it
+    # puts on the wire and the digest frame-processor is configured to expect are
+    # one fact, and a second copy is somewhere for them to drift apart.
+    volumes:
+      - ./tapped_link_health.py:/opt/tapped_link_health.py:ro
+
+    # The base image starts vLLM; override it completely.
+    entrypoint: ["python3", "/opt/tapped_link_health.py"]
+
+    # LOAD-BEARING, and not the same choice gpt-oss-120b makes.
+    #
+    # That one publishes a port from a bridge network, which is right for a
+    # service being dialled. This one originates traffic, and two things break
+    # on a bridge:
+    #
+    #   1. NAT rewrites the source port. Both ends must use the same port, or
+    #      the reply is classified by whichever of its ports is not ephemeral
+    #      — a fresh frame class every beat, none of them the declared one,
+    #      and the beat silently never seen.
+    #   2. The socket would live in the container's network namespace, but the
+    #      ARP for the peer happens in the HOST's. The MSG_CONFIRM flag the
+    #      tool sets to stop a UDP-only flow provoking continuous ARP would be
+    #      applied to a table nobody consults, and the ARP would continue.
+    #
+    # Host networking also makes the source MAC and IP the link's own, which
+    # is what the whitelist checks every frame against.
+    network_mode: host
+
+    # Bound to the tapped interface's address, never 0.0.0.0: a datagram
+    # leaving by a path the tap cannot see would report the link healthy on
+    # the strength of frames that never crossed it. Both addresses are
+    # properties of the link and have no defaults — compose refuses to start
+    # until .env sets them. The port and interval do have defaults, because
+    # they are part of what frame-processor is told to expect and changing
+    # either means changing FRAME_PROCESSOR_EXPECTED_BEATS with it.
+    command:
+      - send
+      - --peer
+      - "${PEER_ADDR:?set PEER_ADDR in .env (see .env.example)}"
+      - --bind
+      - "${BIND_ADDR:?set BIND_ADDR in .env (see .env.example)}"
+      - --port
+      - "${PORT:-9999}"
+      - --interval
+      - "${INTERVAL:-30}"
+
+    # One UDP socket above 1024 and a sleep between sends. No privilege at all
+    # — unlike frame-processor, which needs NET_RAW to capture.
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -8,6 +8,7 @@ plus a Docker Compose stack that runs Postgres (auto-initialized from `sql/`) an
 ```
 ledger/
   sql/001_verification_ledger.sql   # schema (auto-loaded by Postgres on first start)
+  sql/002…004_*.sql                 # migrations, applied in filename order; 004 = capture windows
   app/                              # FastAPI + SQLAlchemy 2.0 async (psycopg3) app
     config.py                       # env-driven settings
     database.py                     # async engine + session dependency
@@ -98,6 +99,39 @@ via `POST /model-deployments/declare` — the hardware it runs on and the model 
 launched with — and every event it writes references those ids. Note the init script only
 runs on an **empty** data directory — reset the volume after schema changes
 (`docker compose down && rm -rf data`).
+
+### Capture windows — frame-processor's account of the tapped link
+
+`sql/004_capture_accounting.sql` adds two tables and a view — drawn in full in the
+[capture-side ERD](../README.md#capture-side-erd). frame-processor classifies every frame on
+the tapped link and checks it against a per-direction whitelist; the result is recorded
+here as one `capture_window` row per fixed window (five minutes) per capture host, with
+a `capture_finding` row per (kind, class, direction, sender) that departed from the
+whitelist inside it. **The window row exists when nothing happened** — a window with
+zero frames is still a row, so a missing window means the tap was blind for it.
+
+Nothing in the core schema changes for this: no existing table gains a column, the only
+FK out of it is `capture_window.hardware_id` → `hardware` (the tapped node, nullable),
+and the tie to a given inference is derived at read time by the `inference_event_capture`
+view rather than stored. A ledger running no tap is the schema it was before `004`.
+
+- `POST /capture-windows` — record one window and its findings in one transaction.
+  The ledger derives `window_id` from (`capture_host`, `ifaces`, `window_start`), so
+  a retry is a `409` rather than a duplicate, and resolves `tapped_hostname` (the
+  hostname the tapped node's deployment declared) to `hardware_id`.
+- `GET /capture-windows?limit=&offset=&capture_host=&complete=&since=` — paged, newest
+  first. `GET /capture-windows/latest?capture_host=` — the newest row; alert when it is
+  older than a few window lengths. `GET /capture-windows/{id}` — the row with its
+  findings.
+- `GET /capture-findings?kind=&frame_class=&since=` — the non-whitelisted traffic report
+  across windows, newest first.
+- `GET /inference-events/{id}/capture` — the inference's capture status from the
+  `inference_event_capture` view: `complete` (windows cover its whole span and all are
+  complete), `tainted` (covered, but a window had drops, findings or a missing
+  interface), `partial` (not fully covered), `uncovered` (no window overlaps — the tap
+  was blind, or the window is not written yet; allow the tap's flush delay before
+  reading it as a gap). Computed at read time and deliberately not written onto the
+  verification verdict, which stays true when the link was noisy.
 
 ### Model deployments — declare & resolve
 
