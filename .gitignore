@@ -9,6 +9,10 @@ data/
 logs/
 *.log
 tmp/
+# Captured/replayed frame dumps — multi-MB, never source.
+old_logs/
+*-capture*.json
+replay.json
 
 # OS/editor metadata.
 .DS_Store

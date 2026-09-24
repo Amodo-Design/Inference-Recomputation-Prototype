@@ -1,0 +1,36 @@
+# Lets an inf-ver-orchestrator verifier take a GPU from a gateway-served model
+# when it has nowhere else to go.
+#
+# Why NEGATIVE, which looks backwards: the verifier LLMISvc is created by the
+# orchestrator, and `templates.py` emits ONLY nodeSelector — no
+# priorityClassName, no tolerations. So the verifier always runs at the
+# default priority of 0 and
+# cannot be raised. Ranking the serving models BELOW zero is the only way to
+# make the verifier win, without changing the orchestrator.
+#
+# The problem it solves: a node reboots, the serving models reschedule onto
+# whichever node has room (they carry no placement constraint at all), and
+# take its GPUs. A verifier pinned to that node by
+# ORCH_VLLM_PLACEMENT_OVERRIDES — because replaying with prompt_logprobs=200
+# needs the memory headroom — then sits Pending indefinitely and verification
+# stalls. Nothing recovers this on its own: the serving pods have no reason to
+# move back once the original node returns.
+#
+# What preemption actually does: it DELETES the victim, it does not migrate it.
+# The Deployment recreates it, and because these models use `uri: hf://` it
+# re-downloads its weights, so that model is briefly unavailable. That is the
+# same cost as evicting one by hand — just automatic.
+#
+# It can also fail in the obvious way: if the preferred node is full or down too, the
+# preempted pod has nowhere to land and goes Pending itself. That is the right
+# way round — the verifier has a hard placement constraint and the serving
+# models genuinely do not care where they run — but it is a trade, not a free
+# win. A soft node preference on each serving model keeps this path rare.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: infver-serving-preemptible
+value: -100
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Gateway-served models. Yields its GPU to an orchestrator verifier, which runs at default priority 0."

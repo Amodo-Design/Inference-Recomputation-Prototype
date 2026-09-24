@@ -1,0 +1,33 @@
+# Re-assert one compose project's desired state. Driven by the matching timer;
+# not meant to be enabled directly.
+#
+# `docker compose up -d` is idempotent: a project already running exactly as
+# its file describes is a no-op, and one that has drifted — a container
+# removed, a stopped container Docker's restart policy will not touch, an
+# edited compose file never applied — is repaired. That is the whole point.
+# It is deliberately NOT `restart`: a healthy container is left alone, so this
+# never interrupts an inference or resets the health check's cadence.
+[Unit]
+Description=Re-assert infver compose project %i
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# The directory holding the compose projects, one subdirectory per project.
+# /opt is the conventional home for hand-deployed software; a service running
+# as root must not depend on somebody's home directory, which breaks when the
+# account is renamed and is usually the wrong permissions anyway.
+#
+# Overridable without editing this file, for a node that keeps them elsewhere:
+#   echo 'INFVER_COMPOSE_ROOT=/srv/infver' | sudo tee /etc/default/infver-compose
+#
+# It is passed to `docker compose` rather than set as WorkingDirectory because
+# WorkingDirectory does not expand environment variables: a variable there is
+# taken literally and the unit fails with 200/CHDIR and no hint as to which
+# directory it wanted.
+Environment=INFVER_COMPOSE_ROOT=/opt/infver
+EnvironmentFile=-/etc/default/infver-compose
+ExecStart=/usr/bin/docker compose --project-directory ${INFVER_COMPOSE_ROOT}/%i \
+    -f ${INFVER_COMPOSE_ROOT}/%i/docker-compose.yml up -d --remove-orphans
+TimeoutStartSec=0

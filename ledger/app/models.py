@@ -108,6 +108,66 @@ class InferenceEvent(Base):
     node_name: Mapped[str | None] = mapped_column(Text)
 
 
+class CaptureWindow(Base):
+    """One window of frame-processor's account of the tapped link (sql/004)."""
+
+    __tablename__ = "capture_window"
+
+    window_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    capture_host: Mapped[str] = mapped_column(Text, nullable=False)
+    ifaces: Mapped[str] = mapped_column(Text, nullable=False)
+    # The tapped node; NULL when its declared hostname is unknown here.
+    hardware_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("hardware.hardware_id")
+    )
+    window_start: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    window_end: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    tap_version: Mapped[str] = mapped_column(Text, nullable=False)
+    process_epoch: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    observed: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    classified: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kernel_dropped: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    truncated: Mapped[int] = mapped_column(Integer, nullable=False)
+    errors: Mapped[int] = mapped_column(Integer, nullable=False)
+    finding_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    finding_groups: Mapped[int] = mapped_column(Integer, nullable=False)
+    finding_groups_overflow: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    classes: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    pins: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class CaptureFinding(Base):
+    """Every finding of one kind/class/direction/sender in one window."""
+
+    __tablename__ = "capture_finding"
+
+    finding_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    window_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("capture_window.window_id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    frame_class: Mapped[str] = mapped_column(Text, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    source_mac: Mapped[str | None] = mapped_column(Text)
+    count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    first_ts: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_ts: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    samples: Mapped[list] = mapped_column(JSONB, nullable=False)
+
+
 class VerificationEvent(Base):
     __tablename__ = "verification_event"
 

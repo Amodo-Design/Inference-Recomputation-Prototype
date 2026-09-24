@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: gpu-enricher
-          image: harbor.infver.local/infver_images/gpu-enricher:latest
+          image: <registry-host>/infver_images/gpu-enricher:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8300

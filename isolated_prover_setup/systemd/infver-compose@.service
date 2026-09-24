@@ -1,0 +1,54 @@
+# Bring one hand-deployed compose project up at boot, and take it down
+# cleanly at shutdown. A template unit, so every project on the node uses one
+# file: `infver-compose@gpt-oss-120b`, `infver-compose@tapped-link-health`.
+#
+# `restart: unless-stopped` in the compose files already restarts a container
+# that crashes, and Docker re-starts such containers when its daemon starts —
+# so on a clean reboot this unit is mostly belt and braces. It earns its place
+# in the cases that policy does not cover: a container someone removed, a
+# project that was never `up`ed after a compose-file change, and an ordered,
+# graceful shutdown rather than the daemon killing everything at once (vLLM
+# needs its stop_grace_period to release the GPU).
+#
+#   sudo mkdir -p /opt/infver
+#   sudo cp -r isolated_prover_setup/*/ /opt/infver/
+#   sudo install -m 0644 infver-compose@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable docker                     # or the policy never fires
+#   sudo systemctl enable --now infver-compose@tapped-link-health
+#   sudo systemctl enable --now infver-compose@gpt-oss-120b
+[Unit]
+Description=infver compose project %i
+Documentation=file:///opt/infver/%i/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The directory holding the compose projects, one subdirectory per project.
+# /opt is the conventional home for hand-deployed software; a service running
+# as root must not depend on somebody's home directory, which breaks when the
+# account is renamed and is usually the wrong permissions anyway.
+#
+# Overridable without editing this file, for a node that keeps them elsewhere:
+#   echo 'INFVER_COMPOSE_ROOT=/srv/infver' | sudo tee /etc/default/infver-compose
+#
+# It is passed to `docker compose` rather than set as WorkingDirectory because
+# WorkingDirectory does not expand environment variables: a variable there is
+# taken literally and the unit fails with 200/CHDIR and no hint as to which
+# directory it wanted.
+Environment=INFVER_COMPOSE_ROOT=/opt/infver
+EnvironmentFile=-/etc/default/infver-compose
+ExecStart=/usr/bin/docker compose --project-directory ${INFVER_COMPOSE_ROOT}/%i \
+    -f ${INFVER_COMPOSE_ROOT}/%i/docker-compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --project-directory ${INFVER_COMPOSE_ROOT}/%i \
+    -f ${INFVER_COMPOSE_ROOT}/%i/docker-compose.yml down
+# vLLM can take many minutes to load a large model and a couple more to
+# release the GPU. Neither should be cut short by a unit timeout.
+TimeoutStartSec=0
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,395 @@
+# frame-processor — reconstructs LLM inference traffic from raw network frames and
+# emits the inf-proxy tap-message contract (tap.source: "frame-processor"). Source:
+# frame-processor (see its README for the pipeline).
+#
+# Two nodes, two roles, and the distinction matters:
+#   - gpu-node-2 is the TAPPED node. Its uplink to the router is the
+#     link the hardware tap is spliced into. It keeps the infver.io/tapped
+#     taint and the gpt-oss-120b nodeSelector.
+#   - gpu-node-1 is the CAPTURE node. The tap's two monitor cables
+#     terminate on its <monitor-iface-a>/<monitor-iface-b>, so this pod runs HERE. That is
+#     the point of a hardware tap: the evidence is collected somewhere other
+#     than the machine being observed, so it needs no cooperation from it.
+#
+# A passive tap on a full-duplex link cannot present one combined feed — there
+# is no point on the link where both directions exist as a single signal — so
+# it emits one monitor output per direction. Both are captured, because an
+# exchange completes only when its request and its response have both been
+# seen and those arrive on different ports. Which port carries which direction
+# is a property of how the cables were run; nothing here depends on knowing.
+#
+# Passive by construction: never in the serving path, so it can crash, lag or
+# be scaled to zero without any effect on inference traffic.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frame-processor
+  labels:
+    app: frame-processor
+spec:
+  # net.core.rmem_max must be raised on the capture node, or
+  # FRAME_PROCESSOR_RCVBUF below is silently capped and the capture drops
+  # frames — which reconstructs inferences with EMPTY RESPONSES rather than
+  # failing. frame-processor logs the effective buffer and warns when it was
+  # capped, so a miss here is degraded-and-visible rather than broken.
+  replicas: 1
+  # One AF_PACKET socket per interface: never run two capturers side by side
+  # (double capture = double-counted events).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: frame-processor
+  template:
+    metadata:
+      labels:
+        app: frame-processor
+    spec:
+      # The capture node — where the tap's monitor cables physically land.
+      # No infver.io/tapped toleration: that taint is on gpu-node-2, and this
+      # pod no longer goes there.
+      nodeSelector:
+        kubernetes.io/hostname: gpu-node-1
+      # Capture the node's real interfaces, not a veth. This is the whole
+      # point of the pod and the reason for NET_RAW below.
+      hostNetwork: true
+      containers:
+        - name: frame-processor
+          image: <registry-host>/infver_images/frame-processor:latest
+          imagePullPolicy: Always
+          securityContext:
+            capabilities:
+              # AF_PACKET socket; deliberately NOT privileged. NET_ADMIN is
+              # deliberately absent too: promiscuous mode is set on the socket
+              # (PACKET_ADD_MEMBERSHIP), which the kernel reference-counts and
+              # reverts on exit, so a monitor port is never left holding a flag
+              # nobody remembers setting. It needs no capability beyond this.
+              add: ["NET_RAW"]
+          env:
+            - name: FRAME_PROCESSOR_MODE
+              value: live
+            # Both monitor ports of the tap on gpu-node-2's uplink. Must be
+            # set explicitly: an empty value auto-detects the default-route
+            # interface, which carries no usable inference traffic — the pod
+            # would run cleanly and emit nothing, silently.
+            - name: FRAME_PROCESSOR_IFACE
+              value: "<monitor-iface-a>,<monitor-iface-b>"
+            # Flannel's VXLAN port. Pod traffic crossing a node boundary is
+            # encapsulated, so the wire carries UDP between node addresses
+            # with the request sealed inside; frame-processor decodes through one
+            # such layer. Confirm with `ip -d link show flannel.1` — a
+            # mismatch is silent, so the value is logged at startup.
+            - name: FRAME_PROCESSOR_DECAP_PORTS
+              value: "8472"
+            # Deliberately empty. Narrowing to 8000 (vLLM) would reject the
+            # client→gateway hop, which is what the tap sees whenever the
+            # gateway is scheduled onto gpu-node-2 and the gateway→vLLM hop
+            # goes node-local. The authoritative filter is content-based
+            # (frame-processor/app/filter.py); a port pre-filter here can only turn
+            # a visible inference into an invisible one. Use the exclusion
+            # below instead.
+            - name: FRAME_PROCESSOR_PORTS
+              value: ""
+            # Deliberately empty. Excluding a port is worth considering when
+            # a high-volume non-inference service shares the tapped link — a
+            # database on the tapped node, say, whose queries are reassembled
+            # and parsed before being discarded. Placing such services off the
+            # tapped node is the better fix, and then the exclusion buys
+            # nothing.
+            #
+            # It costs something, too: the tap accounts for ALL traffic on the
+            # link, and a port the tap refuses to look at is exactly where a
+            # prover would hide bytes. Prefer an empty value.
+            - name: FRAME_PROCESSOR_EXCLUDE_PORTS
+              value: ""
+            # 64MiB per capture socket. A monitor port on a physical uplink
+            # carries everything the node exchanges with the world, and
+            # capture loss does not fail anything — it silently reconstructs
+            # incomplete inferences. Requires the host sysctl (see replicas).
+            - name: FRAME_PROCESSOR_RCVBUF
+              value: "67108864"
+            # POST tap messages to the message-writer, where they land as
+            # tap.source=frame-processor alongside the sidecars' events for the same
+            # inferences — which is what makes the two diffable at all. Every
+            # event filed is another event the runner verifies; that
+            # duplication is expected while both taps run.
+            - name: FRAME_PROCESSOR_EMIT_ENABLED
+              value: "true"
+            - name: FRAME_PROCESSOR_MESSAGE_WRITER_URL
+              # hostNetwork pods don't use cluster DNS by default; the
+              # in-cluster Service name still resolves because dnsPolicy is
+              # set below.
+              value: http://message-writer:8100
+            # File the LINK's own account with the ledger as well: one
+            # capture_window row per fixed window, plus a capture_finding row
+            # per group that departed from the whitelist. The tap message
+            # above is about an inference; this is about the link, and its
+            # point is that the row exists when nothing happened — a window
+            # that is MISSING means the tap was blind for it, the one failure
+            # a findings-only log cannot tell apart from a quiet link.
+            #
+            # Unset means log-only; frame-processor prints the sink as
+            # "off (log only)" in its startup lines, which is where to
+            # confirm this took — and it is the ONLY check that counts.
+            - name: FRAME_PROCESSOR_LEDGER_URL
+              value: http://ledger-api:8000
+            # tap.hostname per model — the ledger resolution key. Must match
+            # the INF_PROXY_MODEL_HOSTNAME the model's sidecar declares.
+            - name: FRAME_PROCESSOR_HOSTNAME_MAP
+              value: "openai/gpt-oss-120b=kserve-gpt-oss-120b"
+            # --- Link whitelist ---
+            # What gpu-node-2 is allowed to put on this link, and what it is
+            # allowed to be sent. Accounting says what every frame IS; this
+            # says whether it belongs here, going the way it was going.
+            # Reporting only — findings are logged and counted, nothing is
+            # dropped or blocked, because the tap stays passive.
+            #
+            # Directions are named from the TAPPED node's side: "out" is what
+            # gpu-node-2 emits, "in" is what it is sent. On the live ring the
+            # direction comes from the kernel's packet type, not from the
+            # source MAC, so the peer cannot move a frame onto the other list
+            # by writing a different address — a frame that arrived from the
+            # wire is an "out" frame whatever it claims, and the claim is then
+            # checked against this MAC.
+            #
+            # The whole block only means anything on a point-to-point link
+            # with one node on the far end, which is what the tapped node's
+            # isolated /30 is. Revisit it together with FRAME_PROCESSOR_IFACE
+            # if the tapped node is ever moved onto a shared segment: on a
+            # link with more than two ends, every legitimate third party is a
+            # finding.
+            #
+            # An unset whitelist and a whitelist nobody is enforcing look
+            # identical in the logs apart from the policy line frame-processor
+            # prints at startup, which is where to confirm it came up.
+            #
+            # Setting the peer MAC is what turns the whitelist on; unset, none
+            # of the rest is read.
+            - name: FRAME_PROCESSOR_PEER_MAC
+              value: "<tapped-node-mac>"
+            - name: FRAME_PROCESSOR_LOCAL_MAC
+              value: "<capture-host-mac>"
+            # The two addresses on the /30. Every IPv4 and ARP frame must be
+            # between exactly these; anything else is off-link. The local MAC
+            # is left unset — frame-processor reads it from sysfs for the capture
+            # interface, which is the value that cannot go stale.
+            - name: FRAME_PROCESSOR_PEER_IP
+              value: "<tapped-node-ip>"
+            - name: FRAME_PROCESSOR_LOCAL_IP
+              value: "<capture-host-ip>"
+            # The ports the tapped node may serve: its source port going out,
+            # the destination port coming in. 8000 is the vLLM it serves (see
+            # isolated_prover_setup/), the only thing it serves here. Empty
+            # would mean any port, and the interesting case this catches is
+            # the tapped node DIALLING OUT — a connection it originates has
+            # neither end on 8000.
+            - name: FRAME_PROCESSOR_PEER_PORTS
+              value: "8000"
+            # Frame classes permitted each way. Empty means nothing is
+            # allowed, so these are not optional once the peer MAC is set.
+            #
+            # No lldp: it is disabled at both ends, so it never appears. No
+            # ipv6 either — nothing on this link needs it, and a class nobody
+            # counted is where bytes hide.
+            #
+            # udp-9999 is the one exception to "no udp". With LLDP disabled
+            # the link carries nothing but ARP and inference, so a link with
+            # no inference on it produces no frames at all — and every rule
+            # here is a rule about a frame that arrived. All of them are
+            # satisfied by nothing arriving, so a capture that has gone blind
+            # agrees with a quiet link in every observable and would write
+            # windows marked `complete` with zero frames in them. udp-9999 is
+            # the declared health check that closes that
+            # (frame-processor/tools/tapped_link_health.py, responder in
+            # tapped-link-health.yaml): a fixed 73-byte
+            # datagram each way every 30s, pinned below and cadenced by
+            # FRAME_PROCESSOR_EXPECTED_BEATS. It is not "a udp exception" so much as
+            # the only udp flow on this link that is counted, pinned AND
+            # timed — which is the standard the rest of the list is held to.
+            #
+            # icmp is deliberately NOT here. The capture host's kernel answers
+            # a health-check datagram with port-unreachable whenever the
+            # responder pod is down, so icmp findings are the signature of
+            # exactly that — and they distinguish it from a dead link, which
+            # produces no icmp at all. Whitelisting it would throw that away.
+            - name: FRAME_PROCESSOR_ALLOW_OUT
+              value: "arp,ipv4-tcp,udp-9999"
+            - name: FRAME_PROCESSOR_ALLOW_IN
+              value: "arp,ipv4-tcp,udp-9999"
+            # mac/class=digest — what a constant flow must carry, declared
+            # rather than learned. Unpinned, accounting trusts the first frame
+            # of a repeating flow and pins to that, which makes the check
+            # circular; declaring the digest means the first frame is checked
+            # like every one after it.
+            #
+            # mac/class=digest — what a constant flow must carry, declared
+            # rather than learned.
+            #
+            # These are digests of the MASKED FRAME, not of the payload: the
+            # pin below covers all 73 bytes with the identification field and
+            # the header checksum zeroed out, so a payload digest would fail
+            # on every datagram. Compute them from a capture of the running
+            # health check with tools/account.py rather than by hand.
+            #
+            # Being wrong here fails LOUDLY and self-corrects: a mismatch
+            # names the digest actually seen —
+            #
+            #   pin-mismatch: udp-9999 from <tapped-node-mac> — payload
+            #     <actual> (73 bytes) does not match declared <this>
+            #
+            # — so if these are wrong, take <actual> from that finding and
+            # replace them. That failure is preferable to leaving this empty:
+            # with no declaration the first datagram after every restart
+            # establishes the reference and is itself held to nothing, which
+            # is roughly forty bytes of unconstrained content recurring on
+            # each restart of the capture.
+            #
+            # Confirm with `python3 -m app.account --live` that `distinct` is
+            # 1 per sender. Anything higher means a field is still moving and
+            # no single digest describes the flow.
+            #
+            # Expect a mismatch after any change to what the tool sends — the
+            # payload, the socket options, the port. Re-read the digest then,
+            # and satisfy yourself WHY it moved before updating it here. A
+            # digest updated reflexively is a rule that constrains nothing.
+            - name: FRAME_PROCESSOR_EXPECTED_PINS
+              value: "<tapped-node-mac>/udp-9999=<REQ frame digest>,<capture-host-mac>/udp-9999=<ACK frame digest>"
+            # mac/class=seconds — a flow declared to appear on a fixed
+            # cadence. The only check here that a flow can fail by not
+            # arriving: everything else judges a
+            # frame that turned up, and is satisfied when none does.
+            #
+            # A missing beat is filed on the window it was DUE in, so a silent
+            # link taints every window it spans rather than one — which is the
+            # difference between a record saying "the tap was blind here" and
+            # one saying "something happened once". An EXTRA frame inside the
+            # cadence is a finding too (beat-unscheduled): "every 30s" is a
+            # claim about both, and an unexpected frame's timing is a channel.
+            #
+            # Both legs are declared because they land on different monitor
+            # ports. A request that keeps arriving while the answer stops
+            # localises the fault to the capture host's end; both stopping
+            # means the sender, the link, or a blind capture. Expect one
+            # beat-missed pair whenever this pod restarts: the schedule
+            # anchors on process start.
+            - name: FRAME_PROCESSOR_EXPECTED_BEATS
+              value: "<tapped-node-mac>/udp-9999=30,<capture-host-mac>/udp-9999=30"
+            # How far from its cadence a beat may land before it is judged,
+            # both ways. A timer-driven sender keeps its cadence closely, so
+            # 5s is generous — which is the right side to err on. Tightening it is close to useless as a
+            # side-channel mitigation: the residual capacity is logarithmic in
+            # this window, so 5s -> 0.5s buys about 3 bits a beat while making
+            # false beat-unscheduled findings likely under load.
+            - name: FRAME_PROCESSOR_BEAT_TOLERANCE
+              value: "5"
+            # Pin this class from byte zero rather than from the end of the
+            # headers.
+            #
+            # Pinned to its payload alone, the health check would leave its own
+            # headers unexamined: the traffic class, the total length, the
+            # time-to-live, both checksums, the UDP length and one of the two
+            # ports — the port rule in policy.py applies only to TCP, and
+            # classification names this class after whichever port is not
+            # ephemeral, so the other one is never looked at. Roughly a
+            # hundred bits per datagram, twice every thirty seconds, in the
+            # one flow on this link that exists to be constant.
+            #
+            # Every one of those fields IS constant here, so the pin covers
+            # them all. Two are excluded because the sender does not choose
+            # them:
+            #
+            #   IPv4 identification   the kernel assigns it, and on this link
+            #                         it moves on every datagram even with DF
+            #                         set — measured, not assumed. Masked out
+            #                         of the pin; the one field left free.
+            #   IPv4 header checksum  derived from the rest of the header,
+            #                         which includes the identification. Masked
+            #                         out and verified ARITHMETICALLY instead,
+            #                         which is stronger than a pin because it
+            #                         holds for a frame nobody has seen before.
+            #
+            # The UDP checksum is NOT excluded: it covers the addresses, the
+            # protocol, the length, the ports and the payload, none of which
+            # vary, so it is constant and pinnable.
+            - name: FRAME_PROCESSOR_PIN_WHOLE_FRAME
+              value: "udp-9999"
+            # Which monitor port carries which direction. REQUIRED on a
+            # hardware tap: the kernel's packet type says "this host sent it",
+            # and a monitor port never sends, so without this every frame
+            # reads as emitted by the tapped node — including traffic towards
+            # it, which then fails the direction allowlist, the peer-MAC check
+            # and the port rule at once, three findings per frame. Measured
+            # from the tap: <monitor-iface-a> carried 192.0.2.1 -> 192.0.2.2, <monitor-iface-b> the
+            # reverse. Named from the tapped node's side, so its own port is
+            # "out". Re-check after any re-cabling; a wrong mapping turns
+            # every frame into a finding.
+            - name: FRAME_PROCESSOR_IFACE_DIRECTION
+              value: "<monitor-iface-a>=in,<monitor-iface-b>=out"
+            # Paths that may cross the link without being inference. The rest
+            # of the whitelist works on frames, so it can bound a TCP stream
+            # to two addresses and one port but never say what is inside it —
+            # an exchange that reassembles and matches nothing used to be
+            # dropped in silence, which is where bytes would hide. Now every
+            # exchange must be inference, a verifier replay, or a path named
+            # here. Each entry is a path a prover may use with contents nobody
+            # validates, so keep it short: these are vLLM's own liveness and
+            # discovery, which Open WebUI and the container healthcheck need.
+            - name: FRAME_PROCESSOR_ALLOWED_ENDPOINTS
+              value: "/health,/v1/models,/metrics,/ping"
+            # --- Structural rules that are properties of THIS LINK ---
+            # What the accounting rules compare a frame against is mostly the
+            # protocol's and is not configurable: an Ethernet ARP has a
+            # six-byte hardware address whatever anyone thinks. These four are
+            # not that — they are opinions about this segment, and every one of
+            # them already holds by default. They are set anyway, because a
+            # default is a decision nobody can see: written out, the manifest
+            # says what the link is, and a change of default in a later image
+            # cannot quietly loosen it.
+            #
+            # IPv4 options. The header length is otherwise read only to find
+            # the transport, so any value from 5 to 15 words admits up to forty
+            # bytes nothing examines. Nothing on a two-NIC /30 has a use for
+            # them; true would be right on a link where they are legitimate,
+            # IGMP's Router Alert being the usual case.
+            - name: FRAME_PROCESSOR_ALLOW_IP_OPTIONS
+              value: "false"
+            # IPv4 fragmentation. One MTU, no hop between the two ends, so
+            # nothing here fragments: More Fragments or a non-zero offset is
+            # evasion or a fault. frame-processor does not reassemble, so a
+            # fragment admitted is a fragment nobody checks.
+            - name: FRAME_PROCESSOR_ALLOW_FRAGMENTS
+              value: "false"
+            # Broadcast destinations. This is a statement about the link, not
+            # about Ethernet: two NICs reaching each other by a static route,
+            # so a frame addressed to everybody is addressed to one host by a
+            # less specific name. ARP is the only thing that would send one,
+            # and only to resolve an address it does not know — which, with
+            # both ends configured, means a cold cache or something to look
+            # at. Note this does not conflict with arp being in ALLOW_OUT /
+            # ALLOW_IN above: re-validating a known neighbour is unicast, and
+            # on a settled point-to-point link that is most of the ARP there
+            # is.
+            - name: FRAME_PROCESSOR_ALLOW_BROADCAST
+              value: "false"
+            # Destination MACs permitted beyond the far end of the link.
+            # Empty is what a segment with two NICs and nothing else on it
+            # means. A group address that is legitimately in use would be
+            # named here rather than needing the rule changed — LLDP's
+            # reserved multicast would have been the entry, had LLDP not been
+            # disabled at both ends (see ALLOW_OUT above).
+            - name: FRAME_PROCESSOR_EXTRA_DESTINATIONS
+              value: ""
+          resources:
+            requests:
+              # Unfiltered capture on a physical link is CPU-bound: there is
+              # no in-kernel packet filter yet, so every cross-node pod frame
+              # is decoded in Python before it can be rejected.
+              cpu: "1"
+              memory: 512Mi
+            limits:
+              # No CPU limit, deliberately: throttling a capturer produces
+              # dropped frames, which is the one failure this service cannot
+              # detect from the inside.
+              memory: 2Gi
+      # Cluster DNS despite hostNetwork, so message-writer resolves.
+      dnsPolicy: ClusterFirstWithHostNet

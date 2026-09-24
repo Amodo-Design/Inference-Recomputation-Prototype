@@ -13,7 +13,7 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
-    - host: chat.infver.local
+    - host: chat.<domain>
       http:
         paths:
           - path: /
@@ -23,7 +23,7 @@ spec:
                 name: open-webui
                 port:
                   number: 8080
-    - host: verify.infver.local
+    - host: verify.<domain>
       http:
         paths:
           - path: /
@@ -33,7 +33,7 @@ spec:
                 name: inf-ver-ui
                 port:
                   number: 3000
-    - host: ledger.infver.local
+    - host: ledger.<domain>
       http:
         paths:
           - path: /
@@ -43,7 +43,7 @@ spec:
                 name: ledger-api
                 port:
                   number: 8000
-    - host: writer.infver.local
+    - host: writer.<domain>
       http:
         paths:
           - path: /

@@ -1,0 +1,19 @@
+# Periodically repair a compose project that has drifted from its file.
+#
+#   sudo systemctl enable --now infver-compose-reassert@tapped-link-health.timer
+#   sudo systemctl enable --now infver-compose-reassert@gpt-oss-120b.timer
+[Unit]
+Description=Re-assert infver compose project %i periodically
+
+[Timer]
+# Well clear of boot: infver-compose@%i has already brought the project up, and
+# vLLM may still be loading weights. Racing it would achieve nothing.
+OnBootSec=10min
+OnUnitActiveSec=10min
+# The cadence here does not need to be exact — unlike the health check's own,
+# which is why that one is a long-running process and not a timer.
+AccuracySec=1min
+Unit=infver-compose-reassert@%i.service
+
+[Install]
+WantedBy=timers.target

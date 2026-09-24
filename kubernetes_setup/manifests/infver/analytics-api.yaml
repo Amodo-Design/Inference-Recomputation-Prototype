@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: analytics-api
-          image: harbor.infver.local/infver_images/analytics-api:latest
+          image: <registry-host>/infver_images/analytics-api:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8400

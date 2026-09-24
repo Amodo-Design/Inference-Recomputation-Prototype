@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_session
 from app.logging_setup import configure_logging
 from app.routers import (
+    capture_window,
     hardware,
     hardware_owner,
     inference_event,
@@ -29,7 +30,11 @@ app.include_router(model_deployment.router)
 # Literal sub-paths (/unverified, /view, /stats) must be registered before the
 # CRUD routers, whose GET /{item_id} would otherwise capture them.
 app.include_router(inference_event.extra_router)
+app.include_router(capture_window.capture_router)
 app.include_router(inference_event.router)
+# frame-processor's account of the tapped link (sql/004).
+app.include_router(capture_window.router)
+app.include_router(capture_window.findings_router)
 app.include_router(verification_view.router)
 app.include_router(verification_event.router)
 

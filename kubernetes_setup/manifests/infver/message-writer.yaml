@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: message-writer
-          image: harbor.infver.local/infver_images/message-writer:latest
+          image: <registry-host>/infver_images/message-writer:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8100

@@ -19,16 +19,16 @@ spec:
           ingress:
             className: nginx
             hosts:
-              core: harbor.infver.local
+              core: <registry-host>
             annotations:
               # Registry layer uploads can be multi-GB
               nginx.ingress.kubernetes.io/proxy-body-size: "0"
               nginx.ingress.kubernetes.io/ssl-redirect: "false"
         # Served through the existing ingress-nginx / MetalLB LoadBalancer.
-        # Point DNS (or /etc/hosts) for harbor.infver.local at the
+        # Point DNS (or /etc/hosts) for <registry-host> at the
         # ingress-nginx controller's external IP. Configure containerd/docker
         # on each node to trust this as an insecure (HTTP) registry — README.
-        externalURL: http://harbor.infver.local
+        externalURL: http://<registry-host>
         # Set your own admin password before first sync.
         harborAdminPassword: <CHANGE_ME_HARBOR_ADMIN_PASSWORD>
         persistence:

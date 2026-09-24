@@ -15,7 +15,7 @@ def make_settings(**overrides: Any) -> Settings:
         ledger_api_url="http://ledger-api:8000",
         namespace="infver",
         poll_seconds=0.01,
-        runner_image="harbor.infver.local/infver_images/inf-ver-runner:latest",
+        runner_image="<registry-host>/infver_images/inf-ver-runner:latest",
         vllm_image="vllm/vllm-openai:latest",
         vllm_max_logprobs=200,
         vllm_max_model_len=8192,

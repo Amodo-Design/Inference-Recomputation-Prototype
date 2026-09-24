@@ -331,6 +331,15 @@ class VerificationEventView(BaseModel):
     input_text_representation: str | None
     output_text_representation: str | None
     verifier_detail: dict[str, Any] | None
+    # Was the tapped link fully accounted for while this inference crossed it
+    # (inference_event_capture view, sql/004): complete | tainted | partial |
+    # uncovered. A second axis beside the verdict, never part of it.
+    capture_status: str | None = None
+    capture_findings: int = 0
+    # When the INFERENCE ran (its span on the tapped link), as distinct from
+    # ``ts``, which is when it was verified. Capture status follows the former.
+    inference_started_at: datetime.datetime | None = None
+    inference_ts: datetime.datetime | None = None
 
 
 class VerificationEventViewPage(BaseModel):
@@ -346,3 +355,113 @@ class VerificationStats(BaseModel):
     fail_count: int
     unverifiable_count: int
     average_match_level: float | None
+
+
+# --------------------------------------------------------------------------
+# Capture windows (frame-processor's account of the tapped link, sql/004)
+# --------------------------------------------------------------------------
+CaptureDirection = Literal["in", "out", "unknown"]
+
+
+class CaptureFindingCreate(BaseModel):
+    kind: str
+    frame_class: str
+    direction: CaptureDirection = "unknown"
+    source_mac: str | None = None
+    count: int
+    first_ts: datetime.datetime
+    last_ts: datetime.datetime
+    # [{"ts": ..., "detail": ..., "frame_b64": ... | null}, ...]
+    samples: list[dict[str, Any]] = []
+
+
+class CaptureFindingRead(ORMModel):
+    finding_id: uuid.UUID
+    window_id: uuid.UUID
+    kind: str
+    frame_class: str
+    direction: str
+    source_mac: str | None
+    count: int
+    first_ts: datetime.datetime
+    last_ts: datetime.datetime
+    samples: list[dict[str, Any]]
+
+
+class CaptureWindowCreate(BaseModel):
+    """One window of the link's account, findings included.
+
+    The ledger owns the id (derived from capture_host, ifaces and
+    window_start, so a retry cannot double-record) and resolves the tapped
+    node from ``tapped_hostname`` — the hostname its model deployment
+    declared — to a hardware row. The caller sends only natural data.
+    """
+
+    capture_host: str
+    ifaces: str
+    tapped_hostname: str | None = None
+    window_start: datetime.datetime
+    window_end: datetime.datetime
+    tap_version: str
+    process_epoch: datetime.datetime | None = None
+    observed: int
+    classified: int
+    kernel_dropped: int
+    truncated: int
+    errors: int
+    finding_count: int
+    finding_groups: int
+    finding_groups_overflow: int = 0
+    complete: bool
+    classes: dict[str, Any]
+    pins: dict[str, Any]
+    findings: list[CaptureFindingCreate] = []
+
+
+class CaptureWindowRead(ORMModel):
+    window_id: uuid.UUID
+    capture_host: str
+    ifaces: str
+    hardware_id: uuid.UUID | None
+    window_start: datetime.datetime
+    window_end: datetime.datetime
+    tap_version: str
+    process_epoch: datetime.datetime | None
+    observed: int
+    classified: int
+    kernel_dropped: int
+    truncated: int
+    errors: int
+    finding_count: int
+    finding_groups: int
+    finding_groups_overflow: int
+    complete: bool
+    classes: dict[str, Any]
+    pins: dict[str, Any]
+
+
+class CaptureWindowDetail(CaptureWindowRead):
+    findings: list[CaptureFindingRead]
+
+
+class CaptureWindowPage(BaseModel):
+    items: list[CaptureWindowRead]
+    total: int
+    limit: int
+    offset: int
+
+
+CaptureStatus = Literal["complete", "tainted", "partial", "uncovered"]
+
+
+class InferenceEventCapture(BaseModel):
+    """Capture status of one inference event, from the inference_event_capture
+    view: was the link fully accounted for while this inference crossed it."""
+
+    inference_event_id: uuid.UUID
+    capture_status: CaptureStatus
+    windows: int
+    span_seconds: float
+    covered_seconds: float
+    kernel_dropped: int
+    findings: int

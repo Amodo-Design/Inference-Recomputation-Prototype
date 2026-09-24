@@ -3,8 +3,7 @@ seed, temperature, top_k and top_p.
 
 The declared model config is the verification contract: the verifier
 re-executes deterministically using exactly these four values read back off
-the ledger's model row (component-setup.md, "Sampling config must be declared
-truthfully"). Any field left null makes every event
+the ledger's model row. Any field left null makes every event
 `unverifiable/sampling_config_missing`; any field that doesn't match how the
 model actually sampled makes verification (correctly) fail. So the tap
 OVERRIDES client-supplied values for every one of these fields rather than

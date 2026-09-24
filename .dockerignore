@@ -1,5 +1,10 @@
-# inf-ver-runner builds from the repository root. Send only its inputs.
+# Two images build from the repository root — inf-ver-runner and
+# frame-processor — because each needs a file from outside its own directory.
+# Deny everything, then re-admit exactly their inputs. A new COPY from the root
+# context needs a matching entry here or it fails with "not found".
 **
+
+# inf-ver-runner: its app, plus the one difr module it puts on PYTHONPATH.
 !inf-ver-runner/
 !inf-ver-runner/requirements.txt
 !inf-ver-runner/app/
@@ -7,6 +12,18 @@
 !difr/
 !difr/difr/
 !difr/difr/gumbel_verify.py
+
+# frame-processor: its app and tools, plus inf-proxy's pure extractors, so both
+# taps render prompts and token ids identically.
+!frame-processor/
+!frame-processor/requirements.txt
+!frame-processor/app/
+!frame-processor/app/**
+!frame-processor/tools/
+!frame-processor/tools/**
+!inf-proxy/
+!inf-proxy/app/
+!inf-proxy/app/capture.py
 
 # Also exclude local artifacts placed inside source directories.
 **/.env

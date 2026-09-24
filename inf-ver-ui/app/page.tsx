@@ -1,5 +1,7 @@
 import AnalysisView, { AnalysisFilters } from "./analysis-view";
 import BulkActionButtons from "./bulk-action-buttons";
+import CapturePill, { CaptureStatus } from "./capture-pill";
+import CaptureView from "./capture-view";
 import DeleteEventButton from "./delete-event-button";
 import ModelSettingsView from "./model-settings-view";
 import ModelsView from "./models-view";
@@ -80,6 +82,14 @@ type VerificationEventView = {
   input_text_representation: string | null;
   output_text_representation: string | null;
   verifier_detail: VerifierDetail | null;
+  // Whether the tapped link was fully accounted for while this inference
+  // crossed it (ledger sql/004). A second axis beside `result`, never part
+  // of it. Absent on ledgers predating the capture tables.
+  capture_status?: CaptureStatus | null;
+  capture_findings?: number;
+  // When the inference itself ran; `ts` above is when it was verified.
+  inference_started_at?: string | null;
+  inference_ts?: string | null;
 };
 
 type VerificationEventPage = {
@@ -166,6 +176,20 @@ function pageHref(state: PageState): string {
 
 function statusClass(result: VerificationEventView["result"]): string {
   return `status status-${result ?? "unverifiable"}`;
+}
+
+// Capture status follows when the INFERENCE ran, not when it was verified,
+// and the two can be many minutes apart under a backlog. The pill therefore
+// shows the inference time beneath it, so the tainted/complete split across
+// a run reads against the right clock.
+function inferenceTimeLabel(event: VerificationEventView): string | null {
+  if (!event.inference_ts) return null;
+  const end = formatDate(event.inference_ts);
+  if (!event.inference_started_at) return `inferred ${end}`;
+  const seconds = Math.round(
+    (new Date(event.inference_ts).getTime() - new Date(event.inference_started_at).getTime()) / 1000
+  );
+  return `inferred ${end} (${seconds}s)`;
 }
 
 function groupItemsBySession<T extends { session_id: string }>(items: T[]): [string, T[]][] {
@@ -275,6 +299,15 @@ function EventRow({ event }: { event: VerificationEventView }) {
         <span className={statusClass(event.result)}>{event.result ?? "-"}</span>
         {event.error_code ? <div className="muted">{event.error_code}</div> : null}
       </td>
+      <td>
+        <CapturePill
+          status={event.capture_status}
+          findings={event.capture_findings ?? 0}
+          ts={event.inference_ts ?? event.ts}
+          href={`/?tab=capture&event=${encodeURIComponent(event.inference_event_id)}`}
+        />
+        {inferenceTimeLabel(event) ? <div className="muted">{inferenceTimeLabel(event)}</div> : null}
+      </td>
       <td>{formatDate(event.ts)}</td>
       <td className="mono">{event.inference_event_id}</td>
       <td className="mono">{event.session_id}</td>
@@ -348,12 +381,15 @@ function PendingRow({ event }: { event: UnverifiedEventView }) {
 function TabNav({
   tab
 }: {
-  tab: "verification" | "instances" | "settings" | "test" | "analysis";
+  tab: "verification" | "capture" | "instances" | "settings" | "test" | "analysis";
 }) {
   return (
     <nav className="tabs" aria-label="Dashboard sections">
       <a className={tab === "verification" ? "tab tab-active" : "tab"} href="/">
         Verification
+      </a>
+      <a className={tab === "capture" ? "tab tab-active" : "tab"} href="/?tab=capture">
+        Capture
       </a>
       <a className={tab === "instances" ? "tab tab-active" : "tab"} href="/?tab=instances">
         Model Instances
@@ -397,6 +433,28 @@ export default async function Page({
           </header>
           <TabNav tab="instances" />
           <ModelsView params={params} />
+        </div>
+      </main>
+    );
+  }
+
+  if (tab === "capture") {
+    return (
+      <main className="page">
+        <div className="shell">
+          <header className="topbar">
+            <div className="title">
+              <span className="eyebrow">Prototype</span>
+              <h1>Inference Verification</h1>
+              <p>What the tapped link carried, window by window</p>
+            </div>
+            <div className="topbar-side">
+              <RefreshButton />
+              <div className="api-label">Ledger {LEDGER_BASE}</div>
+            </div>
+          </header>
+          <TabNav tab="capture" />
+          <CaptureView params={params} />
         </div>
       </main>
     );
@@ -793,12 +851,6 @@ export default async function Page({
             <span>Avg Exact Match</span>
             <strong>{formatPercent(stats.average_match_level)}</strong>
           </div>
-          {/* Latency hidden for now; restore alongside the table column.
-          <div className="stat">
-            <span>Avg Latency</span>
-            <strong>{formatNumber(stats.average_latency_ms, 0)} ms</strong>
-          </div>
-          */}
         </section>
 
         <h2 className="section-title">Verified Events</h2>
@@ -888,6 +940,7 @@ export default async function Page({
               <thead>
                 <tr>
                   <th>Result</th>
+                  <th>Capture</th>
                   <th>Created</th>
                   <th>Inference Event</th>
                   <th>Session</th>
@@ -896,7 +949,6 @@ export default async function Page({
                   <th>Verification Result</th>
                   <th>DiFR Margins</th>
                   <th>Tokens</th>
-                  {/* <th>Latency</th> */}
                   <th>Detail</th>
                   <th>User Prompt</th>
                   <th>Output Diff</th>
@@ -913,7 +965,7 @@ export default async function Page({
                         key={`session-${sessionId}`}
                         sessionId={sessionId}
                         count={rows.length}
-                        colSpan={16}
+                        colSpan={17}
                       />,
                       ...rows.map((event) => <EventRow key={event.id} event={event} />)
                     ])
